@@ -46,7 +46,6 @@ before(async () => {
   server = createApp().listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
-  process.env.PUBLIC_APP_URL = origin;
 });
 
 after(async () => {
@@ -121,6 +120,16 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(badCodePayload.code, "BAD_REQUEST");
   assert.match(badCodePayload.requestId, /^[a-f\d-]{36}$/);
   assert.equal((await fetch(`${origin}/api/events/join/999999`)).status, 404);
+
+  const directInviteResponse = await fetch(`${origin}/${event.inviteCode}`);
+  assert.equal(directInviteResponse.status, 200);
+  assert.match(directInviteResponse.headers.get("content-type"), /text\/html/);
+  assert.match(await directInviteResponse.text(), /id="app"/);
+  for (const appPath of ["/create", "/capsules", "/event/summerhacks-2026"]) {
+    const appRouteResponse = await fetch(`${origin}${appPath}`);
+    assert.equal(appRouteResponse.status, 200);
+    assert.match(appRouteResponse.headers.get("content-type"), /text\/html/);
+  }
 
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
   const memoryForm = new FormData();

@@ -87,7 +87,7 @@ export function createApp() {
     app.get(`/${filename}`, (_request, response) => response.sendFile(path.join(projectRoot, filename)));
   }
 
-  app.get(["/", "/:inviteCode"], (request, response, next) => {
+  app.get(["/", "/create", "/capsules", "/event/:mockCapsuleId", "/:inviteCode"], (request, response, next) => {
     if (request.params.inviteCode && !/^\d{6}$/.test(request.params.inviteCode)) return next();
     response.sendFile(path.join(projectRoot, "index.html"));
   });

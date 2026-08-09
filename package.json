@@ -6,7 +6,7 @@
   "description": "A shared, persistent event memory capsule.",
   "scripts": {
     "dev": "node --watch server.js",
-    "dev:memory": "node server/devMemory.js",
+    "dev:memory": "node --watch server/devMemory.js",
     "start": "node server.js",
     "test": "node --test",
     "smoke": "node scripts/smoke.js"

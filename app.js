@@ -6,6 +6,7 @@ import {
 
 const MEMORY_MESSAGE_MAX_LENGTH = 50;
 const API_ROOT = "/api/v1/events";
+const PARTICIPATED_CAPSULES_STORAGE_KEY = "event-capsule-participation:v1";
 const today = new Date();
 const todayInputValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
@@ -30,6 +31,8 @@ const appState = {
   memoryViewerTimer: null,
   hasPickedMemory: false,
   busy: false,
+  capsuleFilter: "all",
+  participatedCapsules: loadParticipatedCapsules(),
   capsuleDraft: {
     name: "",
     startDate: todayInputValue,
@@ -77,6 +80,13 @@ const CAPSULE_STICKERS = {
   love: { label: "Love", mark: "♥" },
   competition: { label: "Competition", mark: "♛" },
 };
+const CAPSULE_FILTERS = [
+  { value: "all", label: "ALL" },
+  { value: "active", label: "ACTIVE" },
+  { value: "ended", label: "ENDED" },
+  { value: "created", label: "CREATED BY ME" },
+  { value: "joined", label: "JOINED" },
+];
 const MOOD_EMOJIS = {
   happy: "🙂", emotional: "🥹", relieved: "🥹", sad: "😭", tearful: "😭",
   overwhelmed: "🤯", tired: "😴", loved: "❤️", determined: "😤", excited: "🥳",
@@ -95,6 +105,79 @@ async function api(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || "Something went wrong. Try again.");
   return payload;
+}
+
+function loadParticipatedCapsules() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PARTICIPATED_CAPSULES_STORAGE_KEY) || "[]");
+    if (!Array.isArray(stored)) return [];
+    return stored.filter((capsule) => capsule?.id && /^\d{6}$/.test(capsule.inviteCode || ""));
+  } catch {
+    return [];
+  }
+}
+
+function saveParticipatedCapsules() {
+  try { localStorage.setItem(PARTICIPATED_CAPSULES_STORAGE_KEY, JSON.stringify(appState.participatedCapsules)); }
+  catch { /* The archive still works for this visit when browser storage is unavailable. */ }
+}
+
+function participatedCapsuleById(eventId) {
+  return appState.participatedCapsules.find((capsule) => capsule.id === eventId) || null;
+}
+
+function rememberParticipatedCapsule(event, participation = "joined", options = {}) {
+  if (!event?.id || !/^\d{6}$/.test(event.inviteCode || "")) return null;
+  const existing = participatedCapsuleById(event.id);
+  const resolvedParticipation = existing?.participation === "created" || participation === "created" ? "created" : "joined";
+  const record = {
+    id: event.id,
+    inviteCode: event.inviteCode,
+    name: event.name || existing?.name || "Untitled Capsule",
+    startDate: event.startDate || existing?.startDate || null,
+    endDate: event.endDate || existing?.endDate || null,
+    memoryCount: Number(event.memoryCount ?? existing?.memoryCount ?? 0),
+    capacity: Number(event.capacity || existing?.capacity || 100),
+    accentColor: event.accentColor || existing?.accentColor || "blue",
+    sticker: event.sticker || existing?.sticker || "star",
+    participation: resolvedParticipation,
+    status: event.status === "open" ? "active" : "ended",
+    lastActivityAt: options.lastActivityAt || event.updatedAt || existing?.lastActivityAt || event.createdAt || new Date().toISOString(),
+    description: event.description || existing?.description || "",
+  };
+  appState.participatedCapsules = [record, ...appState.participatedCapsules.filter((capsule) => capsule.id !== event.id)];
+  saveParticipatedCapsules();
+  return record;
+}
+
+function forgetParticipatedCapsule(eventId) {
+  appState.participatedCapsules = appState.participatedCapsules.filter((capsule) => capsule.id !== eventId);
+  saveParticipatedCapsules();
+}
+
+function archiveActivityLabel(value) {
+  if (!value) return "recently";
+  return relativeTime(value).replace(/^added /, "");
+}
+
+async function refreshParticipatedCapsules() {
+  if (!appState.participatedCapsules.length || refreshParticipatedCapsules.running) return;
+  refreshParticipatedCapsules.running = true;
+  const snapshot = [...appState.participatedCapsules];
+  try {
+    const refreshed = await Promise.all(snapshot.map(async (capsule) => {
+      try {
+        const { event } = await api(`${API_ROOT}/join/${capsule.inviteCode}`);
+        return { event, participation: capsule.participation };
+      } catch {
+        return null;
+      }
+    }));
+    refreshed.filter(Boolean).forEach(({ event, participation }) => rememberParticipatedCapsule(event, participation));
+    if (appState.screen === "capsules") renderApp();
+  } finally {
+    refreshParticipatedCapsules.running = false;
+  }
 }
 
 function ownerStorageKey(eventId) {
@@ -297,9 +380,24 @@ function CapsuleWindow(items = capsuleEnvelopes) {
   </div>`;
 }
 
-function EventCapsuleMachine(size = "hero") {
-  const custom = size === "setup" ? appState.capsuleDraft : size === "event" ? (appState.event || appState.capsuleDraft) : null;
-  const items = size === "setup" ? [] : size === "event" ? appState.memories.slice(-10).map(memoryEnvelope) : capsuleEnvelopes;
+function CapsulePreviewSticker(stickerKey) {
+  const icons = {
+    star: `<path d="M24 4.5 29.3 17l13.5 1.1-10.3 8.8 3.2 13.2L24 33l-11.7 7.1 3.2-13.2L5.2 18.1 18.7 17Z" />`,
+    graduation: `<path d="m4.5 18.2 19.5-10 19.5 10L24 28.4Z"/><path d="M13 23.2v9.1c6.5 5.2 15.5 5.2 22 0v-9.1"/><path d="M43.5 18.2v14.2"/><circle cx="43.5" cy="35.7" r="2.2"/>`,
+    birthday: `<path d="M9 21.5h30v19H9Z"/><path d="M9 27.5c3.1 3.5 6.1-3.2 9.2.2 3.1 3.4 6.1-3.5 9.3-.1 3.1 3.4 6.2-3.3 11.5.1"/><path d="M17 21.5v-8m14 8v-8"/><path d="M17 11.5c-3-3.1.2-5.8.2-5.8s3.2 2.8-.2 5.8Zm14 0c-3-3.1.2-5.8.2-5.8s3.2 2.8-.2 5.8Z"/>`,
+    tech: `<rect x="6" y="9" width="36" height="26" rx="3"/><path d="M3.5 39.5h41L40 44H8Z"/><path class="sticker-detail" d="m20 17-6 5 6 5m8-10 6 5-6 5m-2.2-12-4 14"/>`,
+    music: `<path d="M20 10v25.5c-3.2-1.9-8.5-.5-9.6 3.2-1 3.5 2.8 6.3 7 5 3.6-1 5.4-3.6 5.4-7.1V17.4L39 13v16.2c-3.2-1.8-8.2-.4-9.2 3.2-1 3.5 2.6 6.1 6.8 5 3.5-.9 5.1-3.5 5.1-7V5.5Z"/>`,
+    travel: `<path d="m4.5 26.5 15-5.7L28 5.5l4.2 1.3-2.8 15.5 12.8 8.3-1.8 3.7-13.8-4.6-7.5 11.8-3.1-1.4 3.4-13.2-13.8 3.4Z"/>`,
+    love: `<path d="M24 42S6 31.5 6 18.4C6 8.3 19.2 5.1 24 14 28.8 5.1 42 8.3 42 18.4 42 31.5 24 42 24 42Z"/>`,
+    competition: `<path d="M14 7h20v10.5C34 26 29.8 31 24 31s-10-5-10-13.5Z"/><path d="M14 12H6c0 9.2 4.5 13 11.4 12.7M34 12h8c0 9.2-4.5 13-11.4 12.7M24 31v7m-8 5h16m-12-5h8"/>`,
+  };
+  return `<svg class="capsule-preview-sticker__graphic" viewBox="0 0 48 48" aria-hidden="true" focusable="false">${icons[stickerKey] || icons.star}</svg>`;
+}
+
+function EventCapsuleMachine(size = "hero", capsule = null, envelopeItems = null) {
+  const custom = capsule || (size === "setup" ? appState.capsuleDraft : size === "event" ? (appState.event || appState.capsuleDraft) : null);
+  const isSetupPreview = size === "setup";
+  const items = envelopeItems || (size === "setup" ? [] : size === "event" ? appState.memories.slice(-10).map(memoryEnvelope) : capsuleEnvelopes);
   const accent = CAPSULE_COLORS[custom?.accentColor]?.value || CAPSULE_COLORS.blue.value;
   const stickerKey = custom?.sticker || "star";
   const sticker = CAPSULE_STICKERS[stickerKey];
@@ -307,10 +405,11 @@ function EventCapsuleMachine(size = "hero") {
   return `<div class="capsule-machine capsule-machine--${size} ${custom ? "capsule-machine--custom" : ""}" style="--capsule-accent:${accent}" aria-label="Illustrated capsule preview for ${esc(machineName)}">
     <span class="machine-ground-shadow"></span>
     <img class="capsule-art" src="./assets/event-capsule-machine.png" alt="" draggable="false" />
+    ${isSetupPreview ? `<canvas class="capsule-preview-art capsule-preview-art--a" aria-hidden="true"></canvas><canvas class="capsule-preview-art capsule-preview-art--b" aria-hidden="true"></canvas>` : ""}
     ${CapsuleWindow(items)}
-    ${custom ? `<span class="capsule-accent-paint capsule-accent-paint--base"></span><span class="capsule-accent-paint capsule-accent-paint--support"></span><span class="capsule-accent-bolt">✦</span>` : ""}
+    ${custom && !isSetupPreview ? `<span class="capsule-accent-paint capsule-accent-paint--base"></span><span class="capsule-accent-paint capsule-accent-paint--support"></span><span class="capsule-accent-bolt">✦</span>` : ""}
     <strong class="capsule-art-label ${machineName.length > 18 ? "is-long" : ""}">${custom ? `<span class="js-setup-name">${esc(machineName)}</span>` : "EVENT<br>CAPSULE"}</strong>
-    ${custom ? `<span class="capsule-event-sticker" data-sticker="${stickerKey}" aria-hidden="true"><span class="sticker-icon">${sticker.mark}</span></span>` : ""}
+    ${isSetupPreview ? `<span class="capsule-preview-sticker" data-sticker="${stickerKey}" aria-hidden="true">${CapsulePreviewSticker(stickerKey)}</span>` : custom ? `<span class="capsule-event-sticker" data-sticker="${stickerKey}" aria-hidden="true"><span class="sticker-icon">${sticker.mark}</span></span>` : ""}
     <span class="capsule-art-scribble capsule-art-scribble--one">///</span>
     <span class="capsule-art-scribble capsule-art-scribble--two">✦</span>
   </div>`;
@@ -327,6 +426,7 @@ function Mascot(type, label) {
 
 function LandingScreen() {
   return `<main id="landing-screen" class="screen landing-screen ${appState.screen === "landing" ? "is-active" : ""}" data-screen="landing">
+    <button type="button" class="landing-archive-link" data-nav="capsules">${Tape("tan", "landing-archive-tape")}<span>MY CAPSULES →</span></button>
     <div class="landing-polaroids landing-polaroids--left">${polaroids.slice(0, 3).map((p, i) => Polaroid(p, i)).join("")}</div>
     <div class="landing-polaroids landing-polaroids--right">${polaroids.slice(3).map((p, i) => Polaroid(p, i + 3)).join("")}</div>
     <section class="landing-core">
@@ -352,6 +452,111 @@ function LandingScreen() {
     <div class="landing-mascots mascot-group--right">
       <img src="./assets/mascot-crew-right.png" alt="A friendly robot and smiling star mascot" draggable="false" />
     </div>
+  </main>`;
+}
+
+function archiveEnvelopeItems(capsule) {
+  if (!capsule.memoryCount) return [];
+  const ratio = Math.min(1, capsule.memoryCount / capsule.capacity);
+  const visibleCount = Math.max(2, Math.min(10, Math.round(2 + ratio * 8)));
+  const offset = capsule.id.length % capsuleEnvelopes.length;
+  return Array.from({ length: visibleCount }, (_, index) => capsuleEnvelopes[(index + offset) % capsuleEnvelopes.length]);
+}
+
+function MiniEventCapsule(capsule, empty = false) {
+  return EventCapsuleMachine(empty ? "archive-empty" : "archive", capsule, empty ? [] : archiveEnvelopeItems(capsule));
+}
+
+function ParticipationBadge(capsule) {
+  const created = capsule.participation === "created";
+  return `<span class="participation-badge participation-badge--${created ? "created" : "joined"}">${created ? "CREATED BY YOU" : "YOU JOINED"}</span>`;
+}
+
+function CapsuleStatus(capsule) {
+  if (capsule.status === "active") return `<span class="archive-status archive-status--active"><i aria-hidden="true"></i> STILL COLLECTING ✦</span>`;
+  return `<span class="archive-status archive-status--ended"><i aria-hidden="true">◆</i> SEALED · ${formatEventDateRange(capsule.startDate, capsule.endDate, false).split(" — ").at(-1)}</span>`;
+}
+
+function CapsuleInfoTag(capsule) {
+  return `<div class="capsule-info-tag">
+    ${Tape(capsule.participation === "created" ? "blue" : "lavender", "archive-tag-tape")}
+    <h2>${esc(capsule.name)}</h2>
+    <p class="archive-date">${esc(formatEventDateRange(capsule.startDate, capsule.endDate))}</p>
+    <p class="archive-capacity"><strong>${capsule.memoryCount} / ${capsule.capacity}</strong> memories</p>
+    <div class="archive-tag-badges">${CapsuleStatus(capsule)}${ParticipationBadge(capsule)}</div>
+    <p class="archive-activity">Last activity ${esc(archiveActivityLabel(capsule.lastActivityAt))}</p>
+    <span class="archive-open-callout">OPEN CAPSULE →</span>
+  </div>`;
+}
+
+function CapsuleArchiveItem(capsule, index) {
+  const tilts = [-1.3, 1.1, -.55, 1.45, -.9];
+  const offsets = [0, 46, -9, 35, 2];
+  return `<article class="capsule-archive-item ${capsule.status === "active" ? "is-active" : "is-ended"} ${capsule.featured ? "is-featured" : ""}" style="--archive-tilt:${tilts[index % tilts.length]}deg;--archive-offset:${offsets[index % offsets.length]}px">
+    ${capsule.featured ? `<p class="recent-capsule-note">MOST RECENT ✦ <span aria-hidden="true">↘</span></p>` : ""}
+    <button type="button" class="archive-capsule-button" data-open-capsule="${esc(capsule.id)}" aria-label="Open ${esc(capsule.name)}">
+      <span class="archive-hover-spark" aria-hidden="true">✦</span>
+      ${MiniEventCapsule(capsule)}
+      ${CapsuleInfoTag(capsule)}
+    </button>
+  </article>`;
+}
+
+function CapsuleFilters() {
+  return `<div class="capsule-filters" role="group" aria-label="Filter your capsules">
+    ${CAPSULE_FILTERS.map((filter) => `<button type="button" class="capsule-filter ${appState.capsuleFilter === filter.value ? "is-selected" : ""}" data-capsule-filter="${filter.value}" aria-pressed="${appState.capsuleFilter === filter.value}">${Tape("tan", "filter-tape")}<span>${filter.label}</span></button>`).join("")}
+  </div>`;
+}
+
+function EmptyCapsuleSlot() {
+  const emptyCapsule = { name: "YOUR NEXT MOMENT", accentColor: "blue", sticker: "star" };
+  return `<article class="empty-capsule-slot">
+    <button type="button" data-nav="setup" aria-label="Create another capsule">
+      ${MiniEventCapsule(emptyCapsule, true)}
+      <span class="empty-slot-copy"><strong>another moment worth keeping?</strong><i>+ CREATE A CAPSULE</i></span>
+    </button>
+  </article>`;
+}
+
+function EmptyCapsulesState() {
+  const emptyCapsule = { name: "WAITING FOR YOU", accentColor: "blue", sticker: "star" };
+  return `<section class="empty-capsules-state">
+    ${MiniEventCapsule(emptyCapsule, true)}
+    <div class="empty-capsules-copy">
+      <h2>NO CAPSULES YET</h2>
+      <p>your memories need somewhere to land ✦</p>
+      ${HandDrawnButton("CREATE YOUR FIRST CAPSULE", { tone: "blue", action: 'data-nav="setup"' })}
+      <span>or join one with a code</span>
+      <form class="empty-join-form" id="empty-join-form" data-error-target="empty-join-error">
+        <label class="sr-only" for="empty-invite-code">Invite code</label>
+        <input id="empty-invite-code" name="inviteCode" data-invite-input inputmode="numeric" maxlength="7" placeholder="583 219" autocomplete="one-time-code" />
+        ${HandDrawnButton("JOIN", { tone: "coral", type: "submit" })}
+        <p class="form-error" id="empty-join-error" aria-live="polite"></p>
+      </form>
+    </div>
+  </section>`;
+}
+
+function MyCapsulesScreen() {
+  const capsules = [...appState.participatedCapsules].sort((a, b) => new Date(b.lastActivityAt || 0) - new Date(a.lastActivityAt || 0));
+  const totalMemories = capsules.reduce((sum, capsule) => sum + capsule.memoryCount, 0);
+  const filteredCapsules = capsules.filter((capsule) => {
+    if (appState.capsuleFilter === "all") return true;
+    if (["active", "ended"].includes(appState.capsuleFilter)) return capsule.status === appState.capsuleFilter;
+    return capsule.participation === appState.capsuleFilter;
+  }).map((capsule, index) => ({ ...capsule, featured: index === 0 }));
+  return `<main id="capsules-screen" class="screen capsules-screen ${appState.screen === "capsules" ? "is-active" : ""}" data-screen="capsules">
+    <header class="capsules-header">
+      <button type="button" class="capsules-home-link" data-nav="landing">⌂ HOME</button>
+      <div class="capsules-heading">
+        ${HandwrittenHeading("MY CAPSULES", { level: 1, className: "capsules-title", note: "all the moments you've been part of ✦" })}
+        <span class="capsules-heading-doodles" aria-hidden="true">☆ &nbsp; ♄ &nbsp; ✦</span>
+      </div>
+    </header>
+    <p class="capsules-summary"><span>✦ ${capsules.length} capsule${capsules.length === 1 ? "" : "s"} floating around here</span><strong>${totalMemories} ${totalMemories === 1 ? "memory" : "memories"} inside ${capsules.length === 1 ? "it" : "them"}</strong></p>
+    ${CapsuleFilters()}
+    ${capsules.length ? `<section class="capsule-archive" aria-live="polite">${filteredCapsules.length ? filteredCapsules.map(CapsuleArchiveItem).join("") : `<p class="archive-filter-empty">nothing under this label yet ✦</p>`}${EmptyCapsuleSlot()}</section>` : EmptyCapsulesState()}
+    <p class="archive-footer-note" aria-hidden="true">different chapters, same little universe &nbsp; ⌁ &nbsp; ✦</p>
   </main>`;
 }
 
@@ -466,7 +671,8 @@ function EventScreen() {
   const dateLabel = currentEvent ? formatEventDateRange(currentEvent.startDate, currentEvent.endDate) : "";
   return `<main id="event-screen" class="screen event-screen ${appState.screen === "event" ? "is-active" : ""}" data-screen="event">
     <header class="event-header">
-      <div>
+      <div class="event-heading-block">
+        ${HandDrawnButton("HOME", { tone: "paper", icon: "⌂", className: "event-home-button", action: 'data-nav="landing"', aria: "Go to the Event Capsule home screen" })}
         ${HandwrittenHeading(currentEvent?.name || "opening capsule...", { level: 1, className: "event-title" })}
         <p class="memory-count"><span id="memory-count" data-memory-total>${appState.memoryCount}</span> / ${capacity} memories so far!</p>
         ${currentEvent ? `<div class="event-keepsake-meta"><strong>${esc(dateLabel)}</strong>${currentEvent.description ? `<span>${esc(currentEvent.description)}</span>` : ""}${currentEvent.status !== "open" ? `<span class="event-status">${esc(currentEvent.status)}</span>` : ""}</div>` : ""}
@@ -656,10 +862,11 @@ function MemoryViewer() {
 function InviteModal() {
   const currentEvent = appState.event;
   const code = currentEvent?.inviteCode || "------";
+  const qrMarkup = currentEvent ? `<img class="event-qr" src="${API_ROOT}/${esc(currentEvent.id)}/qr?code=${encodeURIComponent(currentEvent.inviteCode)}" alt="QR code for this event capsule" />` : "";
   const content = `<div class="modal-content invite-content">
     ${HandwrittenHeading("INVITE EVERYONE", { level: 2, className: "modal-title" })}${Doodle("star", "title-doodle")}
     <div class="invite-grid">
-      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${currentEvent ? `<img class="event-qr" src="${API_ROOT}/${esc(currentEvent.id)}/qr?code=${encodeURIComponent(currentEvent.inviteCode)}" alt="QR code for this event capsule" />` : ""}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
+      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${qrMarkup}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
       <section class="code-side"><h3>INVITE CODE</h3><div class="invite-code">${inviteDisplay(code)}</div><div class="invite-url"><span>♄</span>${esc(inviteUrl().replace(/^https?:\/\//, ""))}</div>
         ${HandDrawnButton("COPY CODE", { tone: "blue", icon: "▣", action: 'data-copy="code"' })}
         ${HandDrawnButton("COPY LINK", { tone: "paper", icon: "↗", action: 'data-copy="link"' })}
@@ -717,15 +924,20 @@ function EventPulseScreen() {
 }
 
 function renderApp() {
-  app.innerHTML = `${SpaceBackground()}<div class="app-shell">${LandingScreen()}${CreateCapsuleScreen()}${EventScreen()}${EventPulseScreen()}</div>${AddMemoryModal()}${DrawModal()}${MemoryViewer()}${InviteModal()}`;
+  app.innerHTML = `${SpaceBackground()}<div class="app-shell">${LandingScreen()}${MyCapsulesScreen()}${CreateCapsuleScreen()}${EventScreen()}${EventPulseScreen()}</div>${AddMemoryModal()}${DrawModal()}${MemoryViewer()}${InviteModal()}`;
+  requestAnimationFrame(() => updateSetupCapsuleArtwork(document.querySelector(".capsule-machine--setup"), CAPSULE_COLORS[appState.capsuleDraft.accentColor]?.value || CAPSULE_COLORS.blue.value));
   if (appState.screen === "pulse") requestAnimationFrame(drawPulseChart);
 }
 
 function showScreen(name) {
-  if (!["landing", "setup"].includes(name) && !appState.event) return;
+  if (!["landing", "setup", "capsules"].includes(name) && !appState.event) return;
   appState.screen = name;
+  const screenPaths = { landing: "/", setup: "/create", capsules: "/capsules" };
+  const nextPath = screenPaths[name];
+  if (nextPath && window.location.pathname !== nextPath) window.history.pushState({ screen: name }, "", nextPath);
   document.querySelectorAll("[data-screen]").forEach((screen) => screen.classList.toggle("is-active", screen.dataset.screen === name));
   window.scrollTo({ top: 0, behavior: "smooth" });
+  if (name === "capsules") void refreshParticipatedCapsules();
   if (name === "pulse") requestAnimationFrame(drawPulseChart);
 }
 
@@ -756,6 +968,88 @@ function showSetupErrors(errors = {}) {
   });
 }
 
+function rgbToHsl(red, green, blue) {
+  const r = red / 255; const g = green / 255; const b = blue / 255;
+  const max = Math.max(r, g, b); const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  if (max === min) return [0, 0, lightness];
+  const delta = max - min;
+  const saturation = lightness > .5 ? delta / (2 - max - min) : delta / (max + min);
+  let hue;
+  if (max === r) hue = (g - b) / delta + (g < b ? 6 : 0);
+  else if (max === g) hue = (b - r) / delta + 2;
+  else hue = (r - g) / delta + 4;
+  return [hue / 6, saturation, lightness];
+}
+
+function hslToRgb(hue, saturation, lightness) {
+  if (!saturation) return [lightness * 255, lightness * 255, lightness * 255];
+  const hueToRgb = (p, q, value) => {
+    let t = value;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const q = lightness < .5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+  const p = 2 * lightness - q;
+  return [hueToRgb(p, q, hue + 1 / 3) * 255, hueToRgb(p, q, hue) * 255, hueToRgb(p, q, hue - 1 / 3) * 255];
+}
+
+function colorizeCapsuleArtwork(machine, accentColor) {
+  const source = machine?.querySelector(".capsule-art");
+  const canvases = [...(machine?.querySelectorAll(".capsule-preview-art") || [])];
+  if (!source || canvases.length !== 2 || !source.naturalWidth) return;
+  const activeIndex = Number(machine.dataset.activePreviewArt || -1);
+  const nextIndex = activeIndex === 0 ? 1 : 0;
+  const canvas = canvases[nextIndex];
+  canvas.width = source.naturalWidth;
+  canvas.height = source.naturalHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(source, 0, 0);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  const color = accentColor.replace("#", "");
+  const targetRgb = [0, 2, 4].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16));
+  const [targetHue, targetSaturation] = rgbToHsl(...targetRgb);
+  const data = pixels.data;
+  const width = canvas.width; const height = canvas.height;
+  for (let index = 0; index < data.length; index += 4) {
+    if (data[index + 3] < 12) continue;
+    const red = data[index]; const green = data[index + 1]; const blue = data[index + 2];
+    const x = (index / 4) % width; const y = Math.floor(index / 4 / width);
+    const nx = x / width; const ny = y / height;
+    const insideWindow = ((nx - .292) / .135) ** 2 + ((ny - .455) / .285) ** 2 < 1;
+    const [sourceHue, sourceSaturation, sourceLightness] = rgbToHsl(red, green, blue);
+    const isBluePaint = !insideWindow && sourceHue > .53 && sourceHue < .72 && sourceSaturation > .34 && blue > 66 && blue - red > 24 && blue - green > 7;
+    if (!isBluePaint) continue;
+    const saturation = Math.min(.96, Math.max(sourceSaturation * .82, targetSaturation * .78, .44));
+    const [nextRed, nextGreen, nextBlue] = hslToRgb(targetHue, saturation, sourceLightness);
+    data[index] = nextRed; data[index + 1] = nextGreen; data[index + 2] = nextBlue;
+  }
+  context.putImageData(pixels, 0, 0);
+  machine.dataset.activePreviewArt = String(nextIndex);
+  machine.dataset.previewAccent = accentColor;
+  requestAnimationFrame(() => canvases.forEach((item, index) => item.classList.toggle("is-active", index === nextIndex)));
+}
+
+function updateSetupCapsuleArtwork(machine, accentColor) {
+  if (!machine || machine.dataset.previewAccent === accentColor) return;
+  machine.dataset.pendingPreviewAccent = accentColor;
+  const source = machine.querySelector(".capsule-art");
+  const paint = () => {
+    delete machine.dataset.previewArtWaiting;
+    colorizeCapsuleArtwork(machine, machine.dataset.pendingPreviewAccent || accentColor);
+  };
+  if (source?.complete && source.naturalWidth) paint();
+  else if (source && !machine.dataset.previewArtWaiting) {
+    machine.dataset.previewArtWaiting = "true";
+    source.addEventListener("load", paint, { once: true });
+  }
+}
+
 function updateCapsuleSetupPreview() {
   const draft = appState.capsuleDraft;
   const name = draft.name.trim() || "YOUR EVENT";
@@ -767,13 +1061,14 @@ function updateCapsuleSetupPreview() {
   dateTag?.classList.toggle("is-invalid", Boolean(dateInvalid));
   document.querySelectorAll(".js-setup-capacity").forEach((node) => { node.textContent = `${draft.capacity} memories`; });
   const machine = document.querySelector(".capsule-machine--setup");
-  machine?.style.setProperty("--capsule-accent", CAPSULE_COLORS[draft.accentColor]?.value || CAPSULE_COLORS.blue.value);
+  const accentColor = CAPSULE_COLORS[draft.accentColor]?.value || CAPSULE_COLORS.blue.value;
+  machine?.style.setProperty("--capsule-accent", accentColor);
+  updateSetupCapsuleArtwork(machine, accentColor);
   if (machine) machine.setAttribute("aria-label", `Illustrated capsule preview for ${name}`);
-  const machineSticker = machine?.querySelector(".capsule-event-sticker");
+  const machineSticker = machine?.querySelector(".capsule-preview-sticker");
   if (machineSticker) {
-    const sticker = CAPSULE_STICKERS[draft.sticker] || CAPSULE_STICKERS.star;
     machineSticker.dataset.sticker = draft.sticker;
-    machineSticker.querySelector(".sticker-icon").textContent = sticker.mark;
+    machineSticker.innerHTML = CapsulePreviewSticker(draft.sticker);
   }
   document.querySelectorAll("[data-setup-capacity]").forEach((button) => {
     const selected = Number(button.dataset.setupCapacity) === Number(draft.capacity);
@@ -836,7 +1131,7 @@ async function createFrontendCapsule() {
     appState.ownerToken = ownerToken;
     storeOwnerToken(event.id, ownerToken);
     appState.busy = false;
-    await enterEvent(event, { announce: "Your capsule is ready for memories! ✦" });
+    await enterEvent(event, { announce: "Your capsule is ready for memories! ✦", participation: "created" });
   } catch (error) {
     screen?.classList.remove("is-creating");
     screen?.removeAttribute("aria-busy");
@@ -980,7 +1275,7 @@ function ripMemoryEnvelope() {
   }, 760);
 }
 
-async function copyValue(kind) {
+async function copyValue(kind = "code") {
   if (!appState.event) return;
   const value = kind === "code"
     ? appState.event.inviteCode
@@ -988,8 +1283,21 @@ async function copyValue(kind) {
       ? `${inviteUrl()}#owner=${encodeURIComponent(appState.ownerToken)}`
       : inviteUrl();
   const successMessage = kind === "code" ? "Invite code copied!" : kind === "owner" ? "Private owner link copied!" : "Invite link copied!";
-  try { await navigator.clipboard.writeText(value); showToast(successMessage); }
-  catch { showToast(`Copy this: ${value}`); }
+  let copied = false;
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(value); copied = true; } catch { /* Use the selection fallback below. */ }
+  }
+  if (!copied) {
+    const fallback = document.createElement("textarea");
+    fallback.value = value;
+    fallback.setAttribute("readonly", "");
+    fallback.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(fallback);
+    fallback.select();
+    try { copied = Boolean(document.execCommand?.("copy")); } catch { copied = false; }
+    fallback.remove();
+  }
+  showToast(copied ? successMessage : `Copy this: ${value}`);
 }
 
 function datetimeLocalValue(value) {
@@ -1009,7 +1317,21 @@ function setInlineError(id, message = "") {
   if (node) node.textContent = message;
 }
 
-async function enterEvent(event, { replaceHistory = false, announce = "" } = {}) {
+async function openParticipatedCapsule(capsule) {
+  if (!capsule || appState.busy) return;
+  appState.busy = true;
+  showToast("opening capsule...");
+  try {
+    const { event } = await api(`${API_ROOT}/join/${capsule.inviteCode}`);
+    await enterEvent(event, { participation: capsule.participation });
+  } catch (error) {
+    showToast(error.message || "Couldn’t open that capsule.");
+  } finally {
+    appState.busy = false;
+  }
+}
+
+async function enterEvent(event, { replaceHistory = false, announce = "", participation = null } = {}) {
   const memories = await loadAllMemories(event);
   if (appState.pendingOwnerToken) {
     storeOwnerToken(event.id, appState.pendingOwnerToken);
@@ -1024,6 +1346,14 @@ async function enterEvent(event, { replaceHistory = false, announce = "" } = {})
   appState.hasPickedMemory = false;
   appState.pulse = null;
   appState.screen = "event";
+  const latestMemoryAt = memories.reduce((latest, memory) => {
+    const value = new Date(memory.createdAt || memory.updatedAt || 0).getTime();
+    return value > latest ? value : latest;
+  }, 0);
+  const latestActivityAt = Math.max(latestMemoryAt, new Date(event.updatedAt || event.createdAt || 0).getTime());
+  const existingParticipation = participatedCapsuleById(event.id)?.participation;
+  const resolvedParticipation = participation || (appState.ownerToken ? "created" : existingParticipation || "joined");
+  rememberParticipatedCapsule(event, resolvedParticipation, { lastActivityAt: latestActivityAt ? new Date(latestActivityAt).toISOString() : undefined });
   const method = replaceHistory ? "replaceState" : "pushState";
   window.history[method]({ inviteCode: event.inviteCode }, "", `/${event.inviteCode}`);
   renderApp();
@@ -1053,18 +1383,23 @@ function connectEventStream() {
     if (update.type === "memory-added") {
       if (!appState.memories.some((memory) => memory.id === update.data.memory.id)) appState.memories.push(update.data.memory);
       appState.memoryCount = update.data.memoryCount;
+      appState.event = { ...appState.event, memoryCount: update.data.memoryCount };
+      rememberParticipatedCapsule(appState.event, participatedCapsuleById(appState.event.id)?.participation, { lastActivityAt: update.data.memory.createdAt || new Date().toISOString() });
       appState.pulse = null;
       refreshLiveEventUi();
     }
     if (update.type === "memory-removed") {
       appState.memories = appState.memories.filter((memory) => memory.id !== update.data.memoryId);
       appState.memoryCount = Math.max(0, appState.memoryCount - 1);
+      appState.event = { ...appState.event, memoryCount: appState.memoryCount };
+      rememberParticipatedCapsule(appState.event, participatedCapsuleById(appState.event.id)?.participation);
       appState.pulse = null;
       refreshLiveEventUi();
     }
     if (["event-updated", "code-rotated"].includes(update.type)) {
       appState.event = update.data.event;
       appState.memoryCount = update.data.event.memoryCount;
+      rememberParticipatedCapsule(appState.event, participatedCapsuleById(appState.event.id)?.participation);
       if (update.type === "code-rotated") {
         window.history.replaceState({ inviteCode: appState.event.inviteCode }, "", `/${appState.event.inviteCode}`);
         try {
@@ -1077,6 +1412,8 @@ function connectEventStream() {
     if (update.type === "pulse-updated") {
       appState.pulse = update.data.pulse;
       appState.memoryCount = update.data.pulse.memoryCount;
+      appState.event = { ...appState.event, memoryCount: appState.memoryCount };
+      rememberParticipatedCapsule(appState.event, participatedCapsuleById(appState.event.id)?.participation);
       if (appState.screen === "pulse") renderApp();
     }
     if (update.type === "analysis-updated") {
@@ -1085,6 +1422,7 @@ function connectEventStream() {
     }
     if (update.type === "event-deleted") {
       removeStoredOwnerToken(appState.event.id);
+      forgetParticipatedCapsule(appState.event.id);
       closeEventStream();
       appState.event = null;
       appState.ownerToken = null;
@@ -1110,6 +1448,7 @@ async function runOwnerAction(action) {
         body: JSON.stringify({ status }),
       });
       appState.event = event;
+      rememberParticipatedCapsule(event, "created");
       renderApp();
       openModal("invite");
       showToast(status === "open" ? "Capsule reopened." : "Capsule closed to new memories.");
@@ -1117,6 +1456,7 @@ async function runOwnerAction(action) {
     if (action === "rotate-code") {
       const { event } = await ownerApi(`${API_ROOT}/${appState.event.id}/code`, { method: "POST" });
       appState.event = event;
+      rememberParticipatedCapsule(event, "created");
       window.history.replaceState({ inviteCode: event.inviteCode }, "", `/${event.inviteCode}`);
       renderApp();
       openModal("invite");
@@ -1137,6 +1477,7 @@ async function runOwnerAction(action) {
         body: JSON.stringify({ submissionsOpenAt, submissionsCloseAt }),
       });
       appState.event = event;
+      rememberParticipatedCapsule(event, "created");
       renderApp();
       openModal("invite");
       showToast("Submission schedule saved.");
@@ -1146,6 +1487,7 @@ async function runOwnerAction(action) {
       const deletedEventId = appState.event.id;
       await ownerApi(`${API_ROOT}/${deletedEventId}`, { method: "DELETE" });
       removeStoredOwnerToken(deletedEventId);
+      forgetParticipatedCapsule(deletedEventId);
       closeEventStream();
       appState.event = null;
       appState.ownerToken = null;
@@ -1169,6 +1511,8 @@ async function deleteMemory(memoryId) {
     await ownerApi(`${API_ROOT}/${appState.event.id}/memories/${memoryId}`, { method: "DELETE" });
     appState.memories = appState.memories.filter((memory) => memory.id !== memoryId);
     appState.memoryCount = Math.max(0, appState.memoryCount - 1);
+    appState.event = { ...appState.event, memoryCount: appState.memoryCount };
+    rememberParticipatedCapsule(appState.event, "created");
     closeModal("viewer");
     renderApp();
     showToast("Memory deleted.");
@@ -1180,18 +1524,19 @@ async function deleteMemory(memoryId) {
 async function joinCapsule(form) {
   if (appState.busy) return;
   const code = String(new FormData(form).get("inviteCode") || form.querySelector("#invite-code")?.value || "").replace(/\s/g, "");
-  setInlineError("join-error");
+  const errorId = form.dataset.errorTarget || "join-error";
+  setInlineError(errorId);
   if (!/^\d{6}$/.test(code)) {
-    setInlineError("join-error", "Enter a 6-digit invite code.");
+    setInlineError(errorId, "Enter a 6-digit invite code.");
     return;
   }
   appState.busy = true;
   showToast("finding capsule...");
   try {
     const { event } = await api(`${API_ROOT}/join/${code}`);
-    await enterEvent(event, { announce: `Joined ${event.name} ✦` });
+    await enterEvent(event, { announce: `Joined ${event.name} ✦`, participation: "joined" });
   } catch (error) {
-    setInlineError("join-error", error.message || "Couldn’t find that capsule.");
+    setInlineError(errorId, error.message || "Couldn’t find that capsule.");
   } finally {
     appState.busy = false;
   }
@@ -1201,7 +1546,8 @@ async function loadEventByCode(code, { replaceHistory = true } = {}) {
   showToast("opening capsule...");
   try {
     const { event } = await api(`${API_ROOT}/join/${code}`);
-    await enterEvent(event, { replaceHistory });
+    const participation = participatedCapsuleById(event.id)?.participation || (getStoredOwnerToken(event.id) || appState.pendingOwnerToken ? "created" : "joined");
+    await enterEvent(event, { replaceHistory, participation });
   } catch (error) {
     appState.event = null; appState.memories = []; appState.memoryCount = 0; appState.screen = "landing";
     window.history.replaceState({}, "", "/");
@@ -1271,6 +1617,8 @@ async function submitMemory({ skipDrawing = false } = {}) {
     const { memory, memoryCount } = await capsuleApi(appState.event, `${API_ROOT}/${appState.event.id}/memories`, { method: "POST", body: form });
     if (!appState.memories.some((existing) => existing.id === memory.id)) appState.memories.push(memory);
     appState.memoryCount = memoryCount;
+    appState.event = { ...appState.event, memoryCount };
+    rememberParticipatedCapsule(appState.event, participatedCapsuleById(appState.event.id)?.participation, { lastActivityAt: memory.createdAt || new Date().toISOString() });
     appState.pulse = null;
     animateSubmittedMemory(source, memory);
   } catch (error) {
@@ -1401,6 +1749,14 @@ function bindInteractions() {
   app.addEventListener("click", (eventTarget) => {
     const nav = eventTarget.target.closest("[data-nav]");
     if (nav) nav.dataset.nav === "pulse" ? showPulse() : showScreen(nav.dataset.nav);
+    const archiveFilter = eventTarget.target.closest("[data-capsule-filter]");
+    if (archiveFilter) {
+      appState.capsuleFilter = archiveFilter.dataset.capsuleFilter;
+      renderApp();
+      requestAnimationFrame(() => document.querySelector(`[data-capsule-filter="${appState.capsuleFilter}"]`)?.focus({ preventScroll: true }));
+    }
+    const archiveCapsule = eventTarget.target.closest("[data-open-capsule]");
+    if (archiveCapsule) openParticipatedCapsule(participatedCapsuleById(archiveCapsule.dataset.openCapsule));
     const capacity = eventTarget.target.closest("[data-setup-capacity]");
     if (capacity) { appState.capsuleDraft.capacity = Number(capacity.dataset.setupCapacity); updateCapsuleSetupPreview(); }
     const accent = eventTarget.target.closest("[data-setup-accent]");
@@ -1429,7 +1785,7 @@ function bindInteractions() {
   });
   app.addEventListener("submit", (submitEvent) => {
     if (submitEvent.target.matches("#capsule-setup-form")) { submitEvent.preventDefault(); createFrontendCapsule(); return; }
-    if (submitEvent.target.matches("#join-form")) { submitEvent.preventDefault(); joinCapsule(submitEvent.target); }
+    if (submitEvent.target.matches("#join-form, #empty-join-form")) { submitEvent.preventDefault(); joinCapsule(submitEvent.target); }
   });
   app.addEventListener("input", (inputEvent) => {
     if (inputEvent.target.matches("#memory-author")) { appState.author = inputEvent.target.value.slice(0, 9); inputEvent.target.value = appState.author; updatePreviews(); }
@@ -1438,10 +1794,10 @@ function bindInteractions() {
       appState.capsuleDraft[inputEvent.target.name] = inputEvent.target.value;
       updateCapsuleSetupPreview();
     }
-    if (inputEvent.target.matches("#invite-code")) {
+    if (inputEvent.target.matches("#invite-code, [data-invite-input]")) {
       const digits = inputEvent.target.value.replace(/\D/g, "").slice(0, 6);
       inputEvent.target.value = inviteDisplay(digits);
-      setInlineError("join-error");
+      setInlineError(inputEvent.target.form?.dataset.errorTarget || "join-error");
     }
   });
   app.addEventListener("change", (inputEvent) => {
@@ -1469,14 +1825,25 @@ document.addEventListener("keydown", (eventTarget) => {
 window.addEventListener("resize", () => { if (appState.screen === "pulse") drawPulseChart(); });
 
 window.addEventListener("popstate", () => {
-  const code = window.location.pathname.slice(1);
-  if (/^\d{6}$/.test(code)) loadEventByCode(code);
-  else { closeEventStream(); appState.screen = "landing"; appState.event = null; appState.ownerToken = null; appState.memories = []; appState.memoryCount = 0; renderApp(); }
+  const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
+  if (/^\d{6}$/.test(path)) loadEventByCode(path);
+  else {
+    closeEventStream();
+    appState.screen = path === "capsules" ? "capsules" : path === "create" ? "setup" : "landing";
+    appState.event = null; appState.ownerToken = null; appState.memories = []; appState.memoryCount = 0;
+    renderApp();
+  }
 });
 
 renderApp();
 bindInteractions();
-const initialInviteCode = window.location.pathname.slice(1);
+const initialPath = window.location.pathname.replace(/^\/+|\/+$/g, "");
+const initialInviteCode = initialPath;
 const initialOwnerToken = new URLSearchParams(window.location.hash.slice(1)).get("owner");
 if (initialOwnerToken) appState.pendingOwnerToken = initialOwnerToken;
 if (/^\d{6}$/.test(initialInviteCode)) loadEventByCode(initialInviteCode);
+else if (["capsules", "create"].includes(initialPath)) {
+  appState.screen = initialPath === "capsules" ? "capsules" : "setup";
+  renderApp();
+  if (appState.screen === "capsules") void refreshParticipatedCapsules();
+}
