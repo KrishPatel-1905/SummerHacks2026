@@ -8,6 +8,9 @@
     "dev": "node --watch server.js",
     "dev:memory": "node --watch server/devMemory.js",
     "start": "node server.js",
+    "video:music": "node video/generate-music.mjs",
+    "video:render:voice": "remotion render video/index.jsx EventCapsuleVoiceover deliverables/event-capsule-voiceover.mp4 --public-dir=video/public --codec=h264 --crf=18",
+    "video:render:captions": "remotion render video/index.jsx EventCapsuleCaptions deliverables/event-capsule-music-captions.mp4 --public-dir=video/public --codec=h264 --crf=18",
     "test": "node --test",
     "smoke": "node scripts/smoke.js"
   },
@@ -22,6 +25,10 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "mongodb-memory-server": "^10.4.3"
+    "@remotion/cli": "^4.0.507",
+    "mongodb-memory-server": "^10.4.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "remotion": "^4.0.507"
   }
 }
