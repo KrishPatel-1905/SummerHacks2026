@@ -22,6 +22,7 @@ export const draftMemory = {
   scene: "concert",
   message: "We actually finished. I’m exhausted and so proud of us.",
   mood: "🥹",
+  author: "",
 };
 
 export const polaroids = [
@@ -52,6 +53,7 @@ export const mockMemories = [
   {
     id: "1",
     scene: "concert",
+    author: "Maya",
     message: "We’re exhausted but I can’t believe we actually finished.",
     mood: "🥹",
     date: "AUG 8",
@@ -62,6 +64,7 @@ export const mockMemories = [
   {
     id: "2",
     scene: "ferris",
+    author: "Jordan",
     message: "The tiny wins, late-night pizza, and this crew made it magic.",
     mood: "🥳",
     date: "AUG 8",
@@ -72,6 +75,7 @@ export const mockMemories = [
   {
     id: "3",
     scene: "campfire",
+    author: "Priya",
     message: "Somehow a room full of strangers turned into our team.",
     mood: "❤️",
     date: "AUG 8",
@@ -82,6 +86,7 @@ export const mockMemories = [
   {
     id: "4",
     scene: "fireworks",
+    author: "Theo",
     message: "That final demo felt like fireworks going off in my chest.",
     mood: "🤯",
     date: "AUG 8",

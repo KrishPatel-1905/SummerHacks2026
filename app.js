@@ -8,12 +8,15 @@ import {
   mockPulseData,
 } from "./mockData.js";
 
+const MEMORY_MESSAGE_MAX_LENGTH = 50;
+
 const appState = {
   screen: "landing",
   modal: null,
   memoryCount: event.memoryCount,
-  message: draftMemory.message,
+  message: draftMemory.message.slice(0, MEMORY_MESSAGE_MAX_LENGTH),
   mood: draftMemory.mood,
+  author: draftMemory.author || "",
   photo: null,
   memoryIndex: 0,
   submitted: false,
@@ -85,6 +88,14 @@ function PhotoScene(scene = "concert", className = "", useUserPhoto = false) {
   const crowds = Array.from({ length: 14 }, (_, i) => `<i style="--i:${i}"></i>`).join("");
   return `<div class="photo-scene photo-scene--${scene} ${className}">
     ${custom || illustratedPhoto || `<div class="scene-glow"></div><div class="scene-detail"></div><div class="scene-crowd">${crowds}</div>`}
+  </div>`;
+}
+
+function UploadPlaceholder(compact = false) {
+  return `<div class="upload-placeholder ${compact ? "upload-placeholder--compact" : ""}" aria-hidden="true">
+    <span class="upload-placeholder-icon">＋</span>
+    <strong>UPLOAD</strong>
+    ${compact ? "" : "<small>click to choose a photo</small>"}
   </div>`;
 }
 
@@ -208,12 +219,12 @@ function MoodPicker() {
 function PostcardPreview() {
   return `<article class="postcard postcard--preview">
     ${Tape("coral", "postcard-tape")}
-    <div class="postcard-photo js-user-photo">${PhotoScene("concert")}</div>
+    <label class="postcard-photo js-user-photo" for="photo-input" aria-label="Choose a photo from your computer">${appState.photo ? `<img src="${esc(appState.photo)}" alt="Selected memory preview" />` : UploadPlaceholder(true)}</label>
     <div class="postcard-copy">
       <span class="postal-lines" aria-hidden="true">〰〰〰</span>
       <span class="stamp">☆</span>
       <p class="js-preview-message">${esc(appState.message)}</p>
-      <span class="postcard-heart">♡</span>
+      <span class="postcard-author js-preview-author">— ${esc(appState.author.trim() || "Anonymous")}</span>
       <span class="mood-sticker js-preview-mood">${appState.mood}</span>
     </div>
   </article>`;
@@ -226,13 +237,15 @@ function AddMemoryModal() {
     <div class="add-memory-grid">
       <section class="add-photo-column">
         <h3>PHOTO</h3>
-        <div class="polaroid upload-polaroid">${Tape("blue", "polaroid-tape")}${PhotoScene(draftMemory.scene, "js-user-photo", true)}${Tape("blue", "corner-tape")}</div>
+        <label class="polaroid upload-polaroid" for="photo-input" aria-label="Upload a photo from your computer">${Tape("blue", "polaroid-tape")}<div class="photo-scene photo-scene--upload js-user-photo">${appState.photo ? `<img src="${esc(appState.photo)}" alt="Selected memory preview" />` : UploadPlaceholder()}</div>${Tape("blue", "corner-tape")}</label>
         <label class="change-photo" for="photo-input"><span aria-hidden="true">▣</span> CHANGE PHOTO</label>
         <input class="sr-only" id="photo-input" type="file" accept="image/*" />
       </section>
       <section class="add-details-column">
+        <label for="memory-author">Your name <span class="optional-label">(optional)</span></label>
+        <input id="memory-author" type="text" maxlength="9" autocomplete="name" placeholder="e.g. Alex" value="${esc(appState.author)}" />
         <label for="memory-message">What’s on your mind right now?</label>
-        <textarea id="memory-message" maxlength="160">${esc(appState.message)}</textarea>
+        <textarea id="memory-message" maxlength="${MEMORY_MESSAGE_MAX_LENGTH}">${esc(appState.message)}</textarea>
         <h3>MOOD</h3>
         ${MoodPicker()}
       </section>
@@ -290,11 +303,13 @@ function DrawModal() {
 
 function MemoryPostcard(memory) {
   return `<article class="memory-postcard">
-    <div class="memory-photo-frame">${Tape("blue", "memory-photo-tape")}${PhotoScene(memory.scene)}</div>
+    <div class="memory-photo-frame">${Tape("blue", "memory-photo-tape")}${memory.photo ? `<img class="memory-user-photo" src="${esc(memory.photo)}" alt="Memory shared by ${esc(memory.author || "Anonymous")}" />` : PhotoScene(memory.scene)}</div>
     <div class="memory-copy">
       <span class="mood-sticker">${memory.mood}</span>
       <span class="stamp stamp--memory">${memory.stamp === "planet" ? "♄" : memory.stamp === "rocket" ? "➶" : "★"}</span>
-      <p>${esc(memory.message)}</p><span class="writing-lines"></span>
+      <p>${esc(memory.message)}</p>
+      <span class="memory-author">— ${esc(memory.author || "Anonymous")}</span>
+      <span class="writing-lines"></span>
       <div class="memory-meta"><span>♄ ✧</span><span><strong>${memory.date}</strong><br>${memory.relativeTime}</span></div>
     </div>
   </article>`;
@@ -395,6 +410,7 @@ function showToast(message) {
 
 function updatePreviews() {
   document.querySelectorAll(".js-preview-message").forEach((node) => { node.textContent = appState.message || "Your memory goes here…"; });
+  document.querySelectorAll(".js-preview-author").forEach((node) => { node.textContent = `— ${appState.author.trim() || "Anonymous"}`; });
   document.querySelectorAll(".js-preview-mood").forEach((node) => { node.textContent = appState.mood; });
   document.querySelectorAll(".mood-option").forEach((button) => {
     const selected = button.dataset.mood === appState.mood;
@@ -446,7 +462,25 @@ function submitMemory() {
           if (!stack.querySelector(".just-added")) stack.insertAdjacentHTML("beforeend", Envelope({ color: "coral", mark: "YOU", doodle: "✦", seal: "planet" }, stack.children.length, "just-added"));
           setTimeout(() => stack.classList.remove("is-shifting"), 620);
         }
-        if (!appState.submitted) { appState.memoryCount += 1; appState.submitted = true; document.querySelector("#memory-count").textContent = appState.memoryCount; }
+        if (!appState.submitted) {
+          const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date()).toUpperCase();
+          mockMemories.unshift({
+            id: `memory-${Date.now()}`,
+            scene: draftMemory.scene,
+            photo: appState.photo,
+            message: appState.message.trim() || "A memory from today.",
+            author: appState.author.trim() || "Anonymous",
+            mood: appState.mood,
+            date,
+            relativeTime: "added just now",
+            envelopeColor: "coral",
+            stamp: "star",
+          });
+          appState.memoryCount += 1;
+          appState.memoryIndex = 0;
+          appState.submitted = true;
+          document.querySelector("#memory-count").textContent = appState.memoryCount;
+        }
         showToast("Memory added to the capsule! ✦");
       }, 1220);
     });
@@ -529,7 +563,12 @@ function bindInteractions() {
     if (colorButton) { drawController?.setColor(colorButton.dataset.color); document.querySelectorAll(".draw-color").forEach((button) => button.classList.toggle("is-active", button === colorButton)); }
   });
   document.querySelector("#join-form")?.addEventListener("submit", (submitEvent) => { submitEvent.preventDefault(); showScreen("event"); showToast("Joined SummerHacks 2026 ✦"); });
-  document.querySelector("#memory-message")?.addEventListener("input", (inputEvent) => { appState.message = inputEvent.target.value; updatePreviews(); });
+  document.querySelector("#memory-author")?.addEventListener("input", (inputEvent) => { appState.author = inputEvent.target.value; updatePreviews(); });
+  document.querySelector("#memory-message")?.addEventListener("input", (inputEvent) => {
+    appState.message = inputEvent.target.value.slice(0, MEMORY_MESSAGE_MAX_LENGTH);
+    inputEvent.target.value = appState.message;
+    updatePreviews();
+  });
   document.querySelector("#photo-input")?.addEventListener("change", (inputEvent) => {
     const file = inputEvent.target.files?.[0]; if (!file) return; const reader = new FileReader();
     reader.onload = () => { appState.photo = reader.result; updatePreviews(); showToast("Photo preview updated locally"); }; reader.readAsDataURL(file);
