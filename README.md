@@ -46,6 +46,20 @@ New memories are analyzed automatically from the participant-selected mood, mess
 
 Production startup validates configuration and connects to MongoDB before the server begins listening.
 
+## Deploy on Vercel
+
+The repository includes a Vercel Function entry point and rewrites for the API, health checks, protected uploads, and client-side routes. Configure these project environment variables before deploying:
+
+```dotenv
+MONGODB_URI=mongodb+srv://...
+PUBLIC_APP_URL=https://your-project.vercel.app
+NODE_ENV=production
+UPLOAD_STORAGE=gridfs
+TRUST_PROXY=true
+```
+
+Do not set `PORT` or `UPLOAD_DIR` on Vercel. Redeploy after adding or changing an environment variable.
+
 API v1 is served under `/api/v1`, with the machine-readable contract at `GET /api/openapi.json`. Legacy `/api/events` routes remain available for backward compatibility.
 
 Memory creation accepts an `Idempotency-Key` header (or `clientRequestId` multipart field), so retrying the same submission does not create duplicate memories or consume capacity twice. Uploaded image signatures and dimensions are validated before durable storage.

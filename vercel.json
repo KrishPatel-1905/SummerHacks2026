@@ -1,0 +1,42 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index?__eventCapsulePath=/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index?__eventCapsulePath=/health"
+    },
+    {
+      "source": "/ready",
+      "destination": "/api/index?__eventCapsulePath=/ready"
+    },
+    {
+      "source": "/uploads/:path*",
+      "destination": "/api/index?__eventCapsulePath=/uploads/:path*"
+    },
+    {
+      "source": "/create",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/capsules",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/event/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/:inviteCode(\\d{6})",
+      "destination": "/index.html"
+    }
+  ]
+}
