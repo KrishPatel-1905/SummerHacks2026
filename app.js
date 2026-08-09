@@ -1647,6 +1647,7 @@ async function submitMemory({ skipDrawing = false } = {}) {
 }
 
 function resetDraft() {
+  drawController?.destroy?.();
   if (appState.photoPreview) URL.revokeObjectURL(appState.photoPreview);
   appState.message = "";
   appState.mood = moods[0].emoji;
@@ -1656,13 +1657,20 @@ function resetDraft() {
   appState.memoryRequestId = null;
   appState.busy = false;
   drawController = null;
+
+  const addLayer = document.querySelector('[data-modal="add"]');
+  const drawLayer = document.querySelector('[data-modal="draw"]');
+  if (addLayer) addLayer.outerHTML = AddMemoryModal();
+  if (drawLayer) drawLayer.outerHTML = DrawModal();
 }
 
 function animateSubmittedMemory(source, memory) {
   source.classList.add("is-sealing");
   const from = source.getBoundingClientRect();
   setTimeout(() => {
-    closeModal("draw"); showScreen("event");
+    closeModal("draw");
+    resetDraft();
+    showScreen("event");
     const target = document.querySelector("#event-screen .capsule-window")?.getBoundingClientRect();
     const flyer = document.createElement("div"); flyer.className = "flying-envelope"; flyer.innerHTML = `<span>♄</span>`;
     flyer.style.left = `${from.left + from.width * .25}px`; flyer.style.top = `${from.top + from.height * .25}px`; document.body.appendChild(flyer);
@@ -1684,7 +1692,6 @@ function animateSubmittedMemory(source, memory) {
           setTimeout(() => stack.classList.remove("is-shifting"), 620);
         }
         updateMemoryTotals();
-        resetDraft();
         showToast("Memory added to the capsule! ✦");
       }, 1220);
     });
@@ -1723,6 +1730,7 @@ function setupDrawingCanvas() {
     undo() { restore(history.pop()); }, clear() { snapshot(); ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; },
     hasDrawing() { return hasInk; },
     toBlob() { return new Promise((resolve) => canvas.toBlob(resolve, "image/png")); },
+    destroy() { window.removeEventListener("resize", resize); },
   };
   canvas.dataset.ready = "true";
 }
