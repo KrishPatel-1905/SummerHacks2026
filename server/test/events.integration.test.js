@@ -48,6 +48,13 @@ after(async () => {
 });
 
 test("event and memory data persist and power invite, viewer, QR, and pulse APIs", async () => {
+  const healthResponse = await fetch(`${origin}/health`);
+  assert.equal(healthResponse.status, 200);
+  assert.equal((await healthResponse.json()).status, "ok");
+  const readyResponse = await fetch(`${origin}/ready`);
+  assert.equal(readyResponse.status, 200);
+  assert.equal((await readyResponse.json()).database, "connected");
+
   const invalidResponse = await fetch(`${origin}/api/events`, jsonRequest({ name: "" }));
   assert.equal(invalidResponse.status, 400);
 
@@ -81,6 +88,8 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   const joinResponse = await fetch(`${origin}/api/events/join/${event.inviteCode}`);
   assert.equal(joinResponse.status, 200);
   assert.equal((await joinResponse.json()).event.name, "SummerHacks 2026");
+  assert.equal((await fetch(`${origin}/api/events/join/123`)).status, 400);
+  assert.equal((await fetch(`${origin}/api/events/join/999999`)).status, 404);
 
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
   const memoryForm = new FormData();
@@ -97,8 +106,10 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(memoryCount, 1);
   assert.equal(memory.eventId, event.id);
   assert.equal(memory.author, "Alex");
-  assert.equal(memory.analysisStatus, "pending");
-  assert.equal(memory.analysis, null);
+  assert.equal(memory.analysisStatus, "complete");
+  assert.equal(memory.analysis.mood, "emotional");
+  assert.ok(memory.analysis.themes.includes("achievement"));
+  assert.deepEqual(memory.analysis.visualTags.sort(), ["drawing", "photo"]);
   assert.match(memory.imageUrl, /^\/uploads\/memory-/);
   assert.match(memory.envelopeDrawing, /^\/uploads\/drawing-/);
   assert.equal((await readFile(path.join(uploadDirectory, path.basename(memory.imageUrl)))).length, png.length);
@@ -112,11 +123,13 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   const randomMemory = await (await fetch(`${origin}/api/events/${event.id}/memories/random`)).json();
   assert.equal(randomMemory.memory.id, memory.id);
 
-  const pendingPulse = await (await fetch(`${origin}/api/events/${event.id}/pulse`)).json();
-  assert.equal(pendingPulse.pulse.memoryCount, 1);
-  assert.equal(pendingPulse.pulse.analyzedMemoryCount, 0);
-  assert.equal(pendingPulse.pulse.pendingAnalysisCount, 1);
-  assert.equal(pendingPulse.pulse.timeline.reduce((sum, point) => sum + point.count, 0), 1);
+  const initialPulse = await (await fetch(`${origin}/api/events/${event.id}/pulse`)).json();
+  assert.equal(initialPulse.pulse.memoryCount, 1);
+  assert.equal(initialPulse.pulse.analyzedMemoryCount, 1);
+  assert.equal(initialPulse.pulse.pendingAnalysisCount, 0);
+  assert.equal(initialPulse.pulse.analysisCoverage, 100);
+  assert.match(initialPulse.pulse.story, /event felt emotional/i);
+  assert.equal(initialPulse.pulse.timeline.reduce((sum, point) => sum + point.count, 0), 1);
 
   await Memory.updateOne({ _id: memory.id }, {
     analysisStatus: "complete",
@@ -136,4 +149,30 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(qrResponse.status, 200);
   assert.match(qrResponse.headers.get("content-type"), /image\/svg\+xml/);
   assert.match(await qrResponse.text(), /<svg/);
+
+  const pendingMemory = await Memory.create({
+    eventId: event.id,
+    message: "Our team learned together",
+    author: "Sam",
+    emoji: "🙂",
+    analysisStatus: "pending",
+    analysis: null,
+  });
+  await Event.updateOne({ _id: event.id }, { $inc: { memoryCount: 1 } });
+  const backfilledPulse = await (await fetch(`${origin}/api/events/${event.id}/pulse`)).json();
+  assert.equal(backfilledPulse.pulse.pendingAnalysisCount, 0);
+  assert.equal((await Memory.findById(pendingMemory._id)).analysisStatus, "complete");
+
+  const capacityResponse = await fetch(`${origin}/api/events`, jsonRequest({ name: "Capacity capsule", capacity: 10 }));
+  const { event: capacityEvent } = await capacityResponse.json();
+  const submissions = await Promise.all(Array.from({ length: 12 }, (_, index) => {
+    const form = new FormData();
+    form.set("message", `Concurrent memory ${index}`);
+    form.set("emoji", "🙂");
+    return fetch(`${origin}/api/events/${capacityEvent.id}/memories`, { method: "POST", body: form });
+  }));
+  assert.equal(submissions.filter((response) => response.status === 201).length, 10);
+  assert.equal(submissions.filter((response) => response.status === 409).length, 2);
+  assert.equal((await Event.findById(capacityEvent.id)).memoryCount, 10);
+  assert.equal(await Memory.countDocuments({ eventId: capacityEvent.id }), 10);
 });

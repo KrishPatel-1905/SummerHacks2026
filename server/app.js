@@ -12,6 +12,16 @@ export function createApp() {
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
 
+  app.get("/health", (_request, response) => response.json({ status: "ok" }));
+  app.get("/ready", async (_request, response) => {
+    try {
+      const connection = await connectToDatabase();
+      response.json({ status: "ready", database: connection.connection.readyState === 1 ? "connected" : "connecting" });
+    } catch {
+      response.status(503).json({ status: "unavailable", database: "disconnected" });
+    }
+  });
+
   app.use("/api", async (_request, _response, next) => {
     try {
       await connectToDatabase();

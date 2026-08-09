@@ -28,6 +28,18 @@ const eventSchema = new mongoose.Schema({
       message: "End date cannot be before the start date.",
     },
   },
+  timezone: {
+    type: String,
+    default: "UTC",
+    maxlength: [100, "Timezone is too long."],
+    validate: {
+      validator(value) {
+        try { Intl.DateTimeFormat("en-US", { timeZone: value }); return true; }
+        catch { return false; }
+      },
+      message: "Timezone must be a valid IANA timezone.",
+    },
+  },
   capacity: {
     type: Number,
     enum: [10, 25, 100, 250],
@@ -49,6 +61,11 @@ const eventSchema = new mongoose.Schema({
     unique: true,
     immutable: true,
     match: [/^\d{6}$/, "Invite code must contain exactly 6 digits."],
+  },
+  memoryCount: {
+    type: Number,
+    min: 0,
+    default: 0,
   },
 }, {
   timestamps: true,

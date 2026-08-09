@@ -33,7 +33,14 @@ Accepted memory photos are JPEG, PNG, WebP, or GIF up to 8 MB. Envelope drawings
 
 ## Event Pulse analysis
 
-New memories are saved with `analysisStatus: "pending"` and `analysis: null`. The pulse endpoint already aggregates completed mood, theme, visual-tag, and hourly activity data from MongoDB. A future TECHNATION worker needs to analyze the photo, message, and emoji, then update the memory to `analysisStatus: "complete"` with the structured `analysis` object (or `"failed"` on failure).
+New memories are analyzed automatically from the participant-selected mood, message keywords, and attached-media metadata. Results are persisted with each memory and aggregated by the pulse endpoint into mood, theme, visual-tag, hourly activity, coverage, and story data. The pulse endpoint also backfills older pending memories. The deterministic analyzer is the extension point for a future vision or language-model worker.
+
+## Health checks
+
+- `GET /health` confirms that the HTTP process is running.
+- `GET /ready` confirms that MongoDB is connected.
+
+Production startup validates configuration and connects to MongoDB before the server begins listening.
 
 ## Tests
 

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { randomInt } from "node:crypto";
 import { Event } from "../models/Event.js";
 import { Memory } from "../models/Memory.js";
 
@@ -9,16 +10,17 @@ export function normalizeInviteCode(value = "") {
 }
 
 function generateInviteCode() {
-  return String(Math.floor(100_000 + Math.random() * 900_000));
+  return String(randomInt(100_000, 1_000_000));
 }
 
-export function serializeEvent(event, memoryCount = 0) {
+export function serializeEvent(event, memoryCount = event.memoryCount ?? 0) {
   return {
     id: String(event._id),
     name: event.name,
     description: event.description,
     startDate: event.startDate,
     endDate: event.endDate,
+    timezone: event.timezone,
     capacity: event.capacity,
     accentColor: event.accentColor,
     sticker: event.sticker,
@@ -41,6 +43,8 @@ export function serializeMemory(memory) {
     envelopeDrawing: memory.envelopeDrawing,
     analysisStatus: memory.analysisStatus,
     analysis: memory.analysis,
+    analysisVersion: memory.analysisVersion,
+    analyzedAt: memory.analyzedAt,
     createdAt: memory.createdAt,
     updatedAt: memory.updatedAt,
   };
@@ -51,6 +55,7 @@ export async function createEvent({
   description = "",
   startDate = null,
   endDate = null,
+  timezone = "UTC",
   capacity = 100,
   accentColor = "blue",
   sticker = "star",
@@ -65,6 +70,7 @@ export async function createEvent({
         description: normalizedDescription,
         startDate,
         endDate,
+        timezone,
         capacity,
         accentColor,
         sticker,
@@ -83,8 +89,7 @@ export async function getEventById(eventId) {
   if (!mongoose.isValidObjectId(eventId)) return null;
   const event = await Event.findById(eventId);
   if (!event) return null;
-  const memoryCount = await Memory.countDocuments({ eventId: event._id });
-  return serializeEvent(event, memoryCount);
+  return serializeEvent(event);
 }
 
 export async function getEventByInviteCode(value) {
@@ -92,6 +97,23 @@ export async function getEventByInviteCode(value) {
   if (!/^\d{6}$/.test(inviteCode)) return null;
   const event = await Event.findOne({ inviteCode });
   if (!event) return null;
-  const memoryCount = await Memory.countDocuments({ eventId: event._id });
-  return serializeEvent(event, memoryCount);
+  return serializeEvent(event);
+}
+
+export async function reconcileEventMemoryCounts() {
+  const counts = await Memory.aggregate([
+    { $group: { _id: "$eventId", count: { $sum: 1 } } },
+  ]);
+  const countByEvent = new Map(counts.map(({ _id, count }) => [String(_id), count]));
+  const events = await Event.find({}).select("_id memoryCount");
+  const updates = events
+    .filter((event) => event.memoryCount !== (countByEvent.get(String(event._id)) ?? 0))
+    .map((event) => ({
+      updateOne: {
+        filter: { _id: event._id },
+        update: { $set: { memoryCount: countByEvent.get(String(event._id)) ?? 0 } },
+      },
+    }));
+  if (updates.length) await Event.bulkWrite(updates);
+  return updates.length;
 }

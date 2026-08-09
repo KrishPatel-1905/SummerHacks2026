@@ -68,6 +68,20 @@ const memorySchema = new mongoose.Schema({
     type: analysisSchema,
     default: null,
   },
+  analysisVersion: {
+    type: String,
+    default: null,
+    maxlength: 80,
+  },
+  analyzedAt: {
+    type: Date,
+    default: null,
+  },
+  analysisError: {
+    type: String,
+    default: null,
+    maxlength: 500,
+  },
 }, {
   timestamps: true,
   versionKey: false,

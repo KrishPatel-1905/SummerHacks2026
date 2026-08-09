@@ -5,6 +5,8 @@ import {
 } from "./mockData.js";
 
 const MEMORY_MESSAGE_MAX_LENGTH = 50;
+const today = new Date();
+const todayInputValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
 const appState = {
   screen: "landing",
@@ -24,9 +26,10 @@ const appState = {
   hasPickedMemory: false,
   busy: false,
   capsuleDraft: {
-    name: "SummerHacks 2026",
-    startDate: "2026-08-08",
-    endDate: "2026-08-09",
+    name: "",
+    startDate: todayInputValue,
+    endDate: todayInputValue,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     capacity: 100,
     accentColor: "blue",
     sticker: "tech",
@@ -619,19 +622,18 @@ function MoodRows() {
 }
 
 function EventPulseScreen() {
-  const pulse = appState.pulse || { memoryCount: appState.memoryCount, moods: [], themes: [], visualTags: [], timeline: [], peak: null, analyzedMemoryCount: 0 };
+  const pulse = appState.pulse || { memoryCount: appState.memoryCount, moods: [], themes: [], visualTags: [], timeline: [], peak: null, analyzedMemoryCount: 0, pendingAnalysisCount: 0, analysisCoverage: 0, story: "" };
   const themes = pulse.themes.length ? pulse.themes.slice(0, 6) : [{ label: "analysis pending" }];
   const objects = pulse.visualTags.length ? pulse.visualTags.slice(0, 4) : [{ label: "pending", empty: true }];
   const peakLabel = pulse.peak ? new Date(pulse.peak.bucket).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "waiting...";
-  const story = pulse.analyzedMemoryCount
-    ? `The strongest analyzed mood is ${pulse.moods[0]?.label || "still emerging"}${pulse.themes[0] ? `, with ${pulse.themes[0].label} appearing most often` : ""}.`
-    : "TECHNATION analysis is still pending. This story will use real mood, theme, and visual metadata once analysis completes.";
+  const story = pulse.story || "The capsule is waiting for its first memory.";
   return `<main id="pulse-screen" class="screen pulse-screen ${appState.screen === "pulse" ? "is-active" : ""}" data-screen="pulse">
     <section class="notebook">
       ${Tape("tan", "notebook-tape notebook-tape--left")}${Tape("tan", "notebook-tape notebook-tape--right")}
       <div class="notebook-page notebook-page--left">
         ${HandwrittenHeading("EVENT PULSE", { level: 1, className: "pulse-title", note: "what did today feel like?" })}
         <div class="memory-total"><strong>${pulse.memoryCount}</strong> Memories</div>
+        <p class="pulse-coverage">${pulse.analysisCoverage}% analyzed${pulse.pendingAnalysisCount ? ` · ${pulse.pendingAnalysisCount} pending` : ""}</p>
         <h2 class="scribble-subhead">How the room felt</h2>${MoodRows()}
         <h2 class="scribble-subhead">What everyone talked about</h2>
         <div class="theme-cloud">${themes.map((theme, index) => `<span class="theme theme--${PULSE_COLORS[index % PULSE_COLORS.length]}">${esc(theme.label.toUpperCase())}</span>`).join("")}</div>

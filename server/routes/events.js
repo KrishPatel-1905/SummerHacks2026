@@ -5,6 +5,8 @@ import QRCode from "qrcode";
 import { Event } from "../models/Event.js";
 import { Memory } from "../models/Memory.js";
 import { imageStorage } from "../storage/index.js";
+import { createRateLimit } from "../middleware/rateLimit.js";
+import { analyzeMemory, analyzePendingMemories } from "../services/analysisService.js";
 import {
   createEvent,
   getEventById,
@@ -16,6 +18,9 @@ import { getEventPulseData } from "../services/pulseService.js";
 
 const router = express.Router();
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const createLimiter = createRateLimit({ windowMs: 15 * 60_000, max: 30, message: "Too many capsules created. Try again later." });
+const joinLimiter = createRateLimit({ windowMs: 10 * 60_000, max: 40, message: "Too many code attempts. Try again later." });
+const memoryLimiter = createRateLimit({ windowMs: 60_000, max: 30, message: "Too many memories submitted. Slow down for a moment." });
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -38,12 +43,12 @@ function requireEventId(request, response, next) {
   next();
 }
 
-router.post("/", async (request, response) => {
+router.post("/", createLimiter, async (request, response) => {
   const event = await createEvent(request.body ?? {});
   response.status(201).json({ event });
 });
 
-router.get("/join/:inviteCode", async (request, response) => {
+router.get("/join/:inviteCode", joinLimiter, async (request, response) => {
   const inviteCode = normalizeInviteCode(request.params.inviteCode);
   if (!/^\d{6}$/.test(inviteCode)) return response.status(400).json({ error: "Enter a 6-digit invite code." });
   const event = await getEventByInviteCode(inviteCode);
@@ -73,16 +78,22 @@ router.get("/:eventId/memories/random", requireEventId, async (request, response
   response.json({ memory: serializeMemory(memory) });
 });
 
-router.post("/:eventId/memories", requireEventId, upload, async (request, response) => {
-  const event = await Event.findById(request.params.eventId).select("capacity");
-  if (!event) return response.status(404).json({ error: "Couldn’t find that capsule." });
-  const existingCount = await Memory.countDocuments({ eventId: request.params.eventId });
-  if (existingCount >= event.capacity) return response.status(409).json({ error: "This capsule is full." });
-
+router.post("/:eventId/memories", requireEventId, memoryLimiter, upload, async (request, response) => {
   const image = request.files?.image?.[0];
   const drawing = request.files?.envelopeDrawing?.[0];
   if (drawing && drawing.size > 2 * 1024 * 1024) {
     return response.status(413).json({ error: "Envelope drawing is too large." });
+  }
+
+  const event = await Event.findOneAndUpdate({
+    _id: request.params.eventId,
+    $expr: { $lt: [{ $ifNull: ["$memoryCount", 0] }, "$capacity"] },
+  }, {
+    $inc: { memoryCount: 1 },
+  }, { new: true }).select("capacity memoryCount");
+  if (!event) {
+    const exists = await Event.exists({ _id: request.params.eventId });
+    return response.status(exists ? 409 : 404).json({ error: exists ? "This capsule is full." : "Couldn’t find that capsule." });
   }
 
   const savedUrls = [];
@@ -92,6 +103,12 @@ router.post("/:eventId/memories", requireEventId, upload, async (request, respon
     const envelopeDrawing = drawing ? await imageStorage.save(drawing, "drawing") : null;
     if (envelopeDrawing) savedUrls.push(envelopeDrawing);
 
+    const analysis = analyzeMemory({
+      message: request.body.message,
+      emoji: request.body.emoji,
+      imageUrl,
+      envelopeDrawing,
+    });
     const memory = await Memory.create({
       eventId: request.params.eventId,
       imageUrl,
@@ -100,13 +117,15 @@ router.post("/:eventId/memories", requireEventId, upload, async (request, respon
       emoji: request.body.emoji,
       envelopeColor: request.body.envelopeColor || "cream",
       envelopeDrawing,
-      analysisStatus: "pending",
-      analysis: null,
+      analysisStatus: "complete",
+      analysis,
+      analysisVersion: "deterministic-v1",
+      analyzedAt: new Date(),
     });
-    const memoryCount = await Memory.countDocuments({ eventId: request.params.eventId });
-    response.status(201).json({ memory: serializeMemory(memory), memoryCount });
+    response.status(201).json({ memory: serializeMemory(memory), memoryCount: event.memoryCount });
   } catch (error) {
     await Promise.all(savedUrls.map((url) => imageStorage.remove(url)));
+    await Event.updateOne({ _id: request.params.eventId, memoryCount: { $gt: 0 } }, { $inc: { memoryCount: -1 } });
     throw error;
   }
 });
@@ -114,6 +133,7 @@ router.post("/:eventId/memories", requireEventId, upload, async (request, respon
 router.get("/:eventId/pulse", requireEventId, async (request, response) => {
   const exists = await Event.exists({ _id: request.params.eventId });
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
+  await analyzePendingMemories(request.params.eventId);
   response.json({ pulse: await getEventPulseData(request.params.eventId) });
 });
 
