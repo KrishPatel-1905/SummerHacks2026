@@ -68,7 +68,13 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal((await readyResponse.json()).database, "connected");
   const openApiResponse = await fetch(`${origin}/api/openapi.json`);
   assert.equal(openApiResponse.status, 200);
-  assert.equal((await openApiResponse.json()).info.version, "1.0.0");
+  const openApi = await openApiResponse.json();
+  assert.equal(openApi.info.version, "1.0.0");
+  for (const [apiPath, pathItem] of Object.entries(openApi.paths)) {
+    const placeholders = [...apiPath.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
+    const parameterNames = (pathItem.parameters || []).filter(({ in: location }) => location === "path").map(({ name }) => name);
+    for (const placeholder of placeholders) assert.ok(parameterNames.includes(placeholder) || Object.values(pathItem).some((operation) => operation?.parameters?.some(({ name, in: location }) => name === placeholder && location === "path")));
+  }
 
   const invalidResponse = await fetch(`${origin}/api/events`, jsonRequest({ name: "" }));
   assert.equal(invalidResponse.status, 400);
@@ -98,6 +104,7 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(eventIndexes.find((index) => index.name === "inviteCode_1")?.unique, true);
   assert.ok(memoryIndexes.some((index) => index.name === "eventId_1"));
   assert.ok(memoryIndexes.some((index) => index.name === "eventId_1_createdAt_1"));
+  assert.equal(memoryIndexes.find((index) => index.name === "eventId_1_clientRequestId_1")?.unique, true);
 
   const secondCreateResponse = await fetch(`${origin}/api/events`, jsonRequest({ name: "Another capsule" }));
   const { event: secondEvent } = await secondCreateResponse.json();
@@ -108,7 +115,11 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(joinResponse.status, 200);
   assert.equal((await joinResponse.json()).event.name, "SummerHacks 2026");
   assert.equal((await fetch(`${origin}/api/v1/events/join/${event.inviteCode}`)).status, 200);
-  assert.equal((await fetch(`${origin}/api/events/join/123`)).status, 400);
+  const badCodeResponse = await fetch(`${origin}/api/events/join/123`);
+  assert.equal(badCodeResponse.status, 400);
+  const badCodePayload = await badCodeResponse.json();
+  assert.equal(badCodePayload.code, "BAD_REQUEST");
+  assert.match(badCodePayload.requestId, /^[a-f\d-]{36}$/);
   assert.equal((await fetch(`${origin}/api/events/join/999999`)).status, 404);
 
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
@@ -117,6 +128,7 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   memoryForm.set("author", "Alex");
   memoryForm.set("emoji", "🥹");
   memoryForm.set("envelopeColor", "lavender");
+  memoryForm.set("clientRequestId", "550e8400-e29b-41d4-a716-446655440000");
   memoryForm.set("image", new Blob([png], { type: "image/png" }), "memory.png");
   memoryForm.set("envelopeDrawing", new Blob([png], { type: "image/png" }), "drawing.png");
 
@@ -132,6 +144,17 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.deepEqual(memory.analysis.visualTags.sort(), ["drawing", "photo"]);
   assert.match(memory.imageUrl, /^\/uploads\/memory-/);
   assert.match(memory.envelopeDrawing, /^\/uploads\/drawing-/);
+  const replayForm = new FormData();
+  replayForm.set("message", "We shipped the persistent capsule together.");
+  replayForm.set("emoji", "🥹");
+  replayForm.set("clientRequestId", "550e8400-e29b-41d4-a716-446655440000");
+  const replayResponse = await fetch(`${origin}/api/events/${event.id}/memories`, capsuleRequest(event, { method: "POST", body: replayForm }));
+  assert.equal(replayResponse.status, 200);
+  const replay = await replayResponse.json();
+  assert.equal(replay.memory.id, memory.id);
+  assert.equal(replay.memoryCount, 1);
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(await Memory.countDocuments({ eventId: event.id }), 1);
   const storedImagePath = new URL(memory.imageUrl, origin).pathname;
   assert.equal((await readFile(path.join(uploadDirectory, path.basename(storedImagePath)))).length, png.length);
   assert.equal((await fetch(`${origin}${storedImagePath}`)).status, 403);
@@ -145,6 +168,15 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   invalidImageForm.set("image", new Blob([Buffer.from("not really a png")], { type: "image/png" }), "fake.png");
   const invalidImageResponse = await fetch(`${origin}/api/events/${event.id}/memories`, capsuleRequest(event, { method: "POST", body: invalidImageForm }));
   assert.equal(invalidImageResponse.status, 415);
+  const oversizedPng = Buffer.from(png);
+  oversizedPng.writeUInt32BE(6000, 16);
+  oversizedPng.writeUInt32BE(6000, 20);
+  const oversizedImageForm = new FormData();
+  oversizedImageForm.set("message", "Oversized image dimensions");
+  oversizedImageForm.set("emoji", "🙂");
+  oversizedImageForm.set("image", new Blob([oversizedPng], { type: "image/png" }), "oversized.png");
+  const oversizedImageResponse = await fetch(`${origin}/api/events/${event.id}/memories`, capsuleRequest(event, { method: "POST", body: oversizedImageForm }));
+  assert.equal(oversizedImageResponse.status, 413);
   assert.equal((await Event.findById(event.id)).memoryCount, 1);
 
   assert.equal((await fetch(`${origin}/api/events/${event.id}`)).status, 403);
@@ -214,6 +246,23 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
     headers: { "Content-Type": "application/json", "x-owner-token": "wrong-token" },
   });
   assert.equal(wrongOwnerUpdate.status, 403);
+
+  const opensAt = new Date(Date.now() + 60_000).toISOString();
+  const closesAt = new Date(Date.now() + 120_000).toISOString();
+  const scheduleResponse = await fetch(`${origin}/api/events/${event.id}`, {
+    ...jsonRequest({ submissionsOpenAt: opensAt, submissionsCloseAt: closesAt }),
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "x-owner-token": ownerToken },
+  });
+  assert.equal(scheduleResponse.status, 200);
+  const scheduledEvent = (await scheduleResponse.json()).event;
+  assert.equal(new Date(scheduledEvent.submissionsOpenAt).toISOString(), opensAt);
+  assert.equal(new Date(scheduledEvent.submissionsCloseAt).toISOString(), closesAt);
+  await fetch(`${origin}/api/events/${event.id}`, {
+    ...jsonRequest({ submissionsOpenAt: null, submissionsCloseAt: null }),
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "x-owner-token": ownerToken },
+  });
 
   const closeResponse = await fetch(`${origin}/api/events/${event.id}`, {
     method: "PATCH",
@@ -286,6 +335,19 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(thirdPage.memories.length, 2);
   assert.equal(thirdPage.nextCursor, null);
   assert.equal(new Set([...firstPage.memories, ...secondPage.memories, ...thirdPage.memories].map((item) => item.id)).size, 10);
+
+  const retryCapsuleResponse = await fetch(`${origin}/api/events`, jsonRequest({ name: "Retry-safe capsule", capacity: 10 }));
+  const { event: retryEvent } = await retryCapsuleResponse.json();
+  const retrySubmissions = await Promise.all([0, 1].map(() => {
+    const form = new FormData();
+    form.set("message", "Submit exactly once");
+    form.set("emoji", "🙂");
+    form.set("clientRequestId", "98e093a7-d7ab-4a2e-b59d-aa8c352e48d4");
+    return fetch(`${origin}/api/events/${retryEvent.id}/memories`, capsuleRequest(retryEvent, { method: "POST", body: form }));
+  }));
+  assert.deepEqual(retrySubmissions.map(({ status }) => status).sort(), [200, 201]);
+  assert.equal((await Event.findById(retryEvent.id)).memoryCount, 1);
+  assert.equal(await Memory.countDocuments({ eventId: retryEvent.id }), 1);
 
   const deleteEventResponse = await fetch(`${origin}/api/events/${event.id}`, {
     method: "DELETE",

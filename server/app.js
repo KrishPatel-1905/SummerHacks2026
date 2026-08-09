@@ -50,7 +50,15 @@ export function createApp() {
     }
   });
 
-  app.use("/api", async (_request, _response, next) => {
+  app.use("/api", async (request, response, next) => {
+    const sendJson = response.json.bind(response);
+    response.json = (payload) => {
+      if (response.statusCode >= 400 && payload?.error) {
+        const defaultCodes = { 400: "BAD_REQUEST", 401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT", 413: "PAYLOAD_TOO_LARGE", 415: "UNSUPPORTED_MEDIA", 423: "CAPSULE_CLOSED", 429: "RATE_LIMITED", 503: "SERVICE_UNAVAILABLE" };
+        return sendJson({ ...payload, code: payload.code || defaultCodes[response.statusCode] || "REQUEST_FAILED", requestId: payload.requestId || request.id });
+      }
+      return sendJson(payload);
+    };
     try {
       await connectToDatabase();
       next();

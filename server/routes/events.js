@@ -176,10 +176,26 @@ router.get("/:eventId/memories/random", requireEventId, requireCapsuleAccess, as
 router.post("/:eventId/memories", requireEventId, memoryLimiter, requireCapsuleAccess, upload, async (request, response) => {
   const image = request.files?.image?.[0];
   const drawing = request.files?.envelopeDrawing?.[0];
+  const clientRequestId = String(request.get("idempotency-key") || request.body.clientRequestId || "").trim() || null;
+  if (clientRequestId && !/^[A-Za-z0-9_-]{16,100}$/.test(clientRequestId)) {
+    return response.status(400).json({ error: "Idempotency key is invalid." });
+  }
   validateImageFile(image);
   validateImageFile(drawing, { pngOnly: true });
   if (drawing && drawing.size > 2 * 1024 * 1024) {
     return response.status(413).json({ error: "Envelope drawing is too large." });
+  }
+
+  if (clientRequestId) {
+    const existing = await Memory.findOne({ eventId: request.params.eventId, clientRequestId });
+    if (existing) {
+      const current = await Event.findById(request.params.eventId).select("memoryCount");
+      return response.json({
+        memory: serializeMemory(existing, request.capsuleEvent.inviteCode),
+        memoryCount: current?.memoryCount ?? 0,
+        idempotentReplay: true,
+      });
+    }
   }
 
   const now = new Date();
@@ -218,6 +234,7 @@ router.post("/:eventId/memories", requireEventId, memoryLimiter, requireCapsuleA
     });
     const memory = await Memory.create({
       eventId: request.params.eventId,
+      clientRequestId,
       imageUrl,
       message: request.body.message,
       author: request.body.author || "",
@@ -235,6 +252,17 @@ router.post("/:eventId/memories", requireEventId, memoryLimiter, requireCapsuleA
   } catch (error) {
     await Promise.all(savedUrls.map((url) => imageStorage.remove(url)));
     await Event.updateOne({ _id: request.params.eventId, memoryCount: { $gt: 0 } }, { $inc: { memoryCount: -1 } });
+    if (error?.code === 11000 && clientRequestId) {
+      const existing = await Memory.findOne({ eventId: request.params.eventId, clientRequestId });
+      const current = await Event.findById(request.params.eventId).select("memoryCount");
+      if (existing) {
+        return response.json({
+          memory: serializeMemory(existing, request.capsuleEvent.inviteCode),
+          memoryCount: current?.memoryCount ?? 0,
+          idempotentReplay: true,
+        });
+      }
+    }
     throw error;
   }
 });

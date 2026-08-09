@@ -71,6 +71,13 @@ const memorySchema = new mongoose.Schema({
     type: analysisSchema,
     default: null,
   },
+  clientRequestId: {
+    type: String,
+    default: null,
+    trim: true,
+    minlength: 16,
+    maxlength: 100,
+  },
   analysisVersion: {
     type: String,
     default: null,
@@ -91,5 +98,9 @@ const memorySchema = new mongoose.Schema({
 });
 
 memorySchema.index({ eventId: 1, createdAt: 1 });
+memorySchema.index(
+  { eventId: 1, clientRequestId: 1 },
+  { unique: true, partialFilterExpression: { clientRequestId: { $type: "string" } } },
+);
 
 export const Memory = mongoose.models.Memory ?? mongoose.model("Memory", memorySchema);

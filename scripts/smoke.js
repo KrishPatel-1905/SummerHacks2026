@@ -30,6 +30,7 @@ try {
   form.set("message", "We shipped this smoke test together");
   form.set("author", "Smoke");
   form.set("emoji", "🥳");
+  form.set("clientRequestId", "smoke-test-request-00000001");
   form.set("image", new Blob([png], { type: "image/png" }), "smoke.png");
   const memory = await json(await fetch(`${origin}/api/v1/events/${event.id}/memories`, {
     method: "POST",
@@ -37,6 +38,18 @@ try {
     body: form,
   }));
   assert.equal(memory.memory.analysisStatus, "complete");
+  const replayForm = new FormData();
+  replayForm.set("message", "We shipped this smoke test together");
+  replayForm.set("emoji", "🥳");
+  replayForm.set("clientRequestId", "smoke-test-request-00000001");
+  const replay = await json(await fetch(`${origin}/api/v1/events/${event.id}/memories`, {
+    method: "POST",
+    headers: { "x-capsule-code": event.inviteCode },
+    body: replayForm,
+  }));
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.memory.id, memory.memory.id);
+  assert.equal(replay.memoryCount, 1);
 
   const protectedImage = await fetch(`${origin}${memory.memory.imageUrl}`);
   assert.equal(protectedImage.status, 200);
@@ -47,6 +60,14 @@ try {
   }));
   assert.equal(pulse.pulse.analysisCoverage, 100);
   assert.equal(pulse.pulse.memoryCount, 1);
+
+  const scheduled = await json(await fetch(`${origin}/api/v1/events/${event.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "x-owner-token": ownerToken },
+    body: JSON.stringify({ submissionsOpenAt: new Date(Date.now() + 60_000).toISOString(), submissionsCloseAt: new Date(Date.now() + 120_000).toISOString() }),
+  }));
+  assert.ok(scheduled.event.submissionsOpenAt);
+  assert.ok(scheduled.event.submissionsCloseAt);
 
   const closed = await json(await fetch(`${origin}/api/v1/events/${event.id}`, {
     method: "PATCH",

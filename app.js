@@ -24,6 +24,7 @@ const appState = {
   author: "",
   photoPreview: null,
   photoFile: null,
+  memoryRequestId: null,
   memoryIndex: 0,
   memoryViewerPhase: "sealed",
   memoryViewerTimer: null,
@@ -665,6 +666,12 @@ function InviteModal() {
         ${appState.ownerToken ? `<div class="owner-controls"><h3>OWNER CONTROLS</h3>
           ${HandDrawnButton(currentEvent.status === "open" ? "CLOSE CAPSULE" : "REOPEN CAPSULE", { tone: "paper", action: 'data-owner-action="toggle-status"' })}
           ${HandDrawnButton("NEW INVITE CODE", { tone: "paper", action: 'data-owner-action="rotate-code"' })}
+          <div class="owner-schedule">
+            <label>ACCEPT FROM<input id="owner-open-at" type="datetime-local" value="${esc(datetimeLocalValue(currentEvent.submissionsOpenAt))}" /></label>
+            <label>ACCEPT UNTIL<input id="owner-close-at" type="datetime-local" value="${esc(datetimeLocalValue(currentEvent.submissionsCloseAt))}" /></label>
+            <small>Leave both blank for no schedule.</small>
+          </div>
+          ${HandDrawnButton("SAVE SCHEDULE", { tone: "paper", action: 'data-owner-action="save-schedule"' })}
           ${HandDrawnButton("COPY OWNER LINK", { tone: "paper", action: 'data-copy="owner"' })}
           ${HandDrawnButton("DELETE CAPSULE", { tone: "coral", action: 'data-owner-action="delete-capsule"' })}
         </div>` : ""}
@@ -985,6 +992,18 @@ async function copyValue(kind) {
   catch { showToast(`Copy this: ${value}`); }
 }
 
+function datetimeLocalValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function newRequestId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}-memory`;
+}
+
 function setInlineError(id, message = "") {
   const node = document.querySelector(`#${id}`);
   if (node) node.textContent = message;
@@ -1102,6 +1121,25 @@ async function runOwnerAction(action) {
       renderApp();
       openModal("invite");
       showToast(`New invite code: ${inviteDisplay(event.inviteCode)}`);
+    }
+    if (action === "save-schedule") {
+      const openValue = document.querySelector("#owner-open-at")?.value || "";
+      const closeValue = document.querySelector("#owner-close-at")?.value || "";
+      const submissionsOpenAt = openValue ? new Date(openValue).toISOString() : null;
+      const submissionsCloseAt = closeValue ? new Date(closeValue).toISOString() : null;
+      if (submissionsOpenAt && submissionsCloseAt && submissionsCloseAt <= submissionsOpenAt) {
+        showToast("Closing time must be after opening time.");
+        return;
+      }
+      const { event } = await ownerApi(`${API_ROOT}/${appState.event.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submissionsOpenAt, submissionsCloseAt }),
+      });
+      appState.event = event;
+      renderApp();
+      openModal("invite");
+      showToast("Submission schedule saved.");
     }
     if (action === "delete-capsule") {
       if (!window.confirm("Delete this capsule and every memory permanently?")) return;
@@ -1221,6 +1259,8 @@ async function submitMemory({ skipDrawing = false } = {}) {
   try {
     const drawing = !skipDrawing && drawController?.hasDrawing() ? await drawController.toBlob() : null;
     const form = new FormData();
+    appState.memoryRequestId ||= newRequestId();
+    form.set("clientRequestId", appState.memoryRequestId);
     form.set("message", appState.message.trim());
     form.set("emoji", appState.mood);
     form.set("author", appState.author.trim());
@@ -1248,6 +1288,7 @@ function resetDraft() {
   appState.author = "";
   appState.photoPreview = null;
   appState.photoFile = null;
+  appState.memoryRequestId = null;
   appState.busy = false;
   drawController = null;
 }
