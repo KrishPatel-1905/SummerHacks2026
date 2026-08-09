@@ -397,6 +397,7 @@ function CapsulePreviewSticker(stickerKey) {
 function EventCapsuleMachine(size = "hero", capsule = null, envelopeItems = null) {
   const custom = capsule || (size === "setup" ? appState.capsuleDraft : size === "event" ? (appState.event || appState.capsuleDraft) : null);
   const isSetupPreview = size === "setup";
+  const usesIntegratedCustomization = Boolean(custom && (isSetupPreview || size === "event"));
   const items = envelopeItems || (size === "setup" ? [] : size === "event" ? appState.memories.slice(-10).map(memoryEnvelope) : capsuleEnvelopes);
   const accent = CAPSULE_COLORS[custom?.accentColor]?.value || CAPSULE_COLORS.blue.value;
   const stickerKey = custom?.sticker || "star";
@@ -405,11 +406,11 @@ function EventCapsuleMachine(size = "hero", capsule = null, envelopeItems = null
   return `<div class="capsule-machine capsule-machine--${size} ${custom ? "capsule-machine--custom" : ""}" style="--capsule-accent:${accent}" aria-label="Illustrated capsule preview for ${esc(machineName)}">
     <span class="machine-ground-shadow"></span>
     <img class="capsule-art" src="./assets/event-capsule-machine.png" alt="" draggable="false" />
-    ${isSetupPreview ? `<canvas class="capsule-preview-art capsule-preview-art--a" aria-hidden="true"></canvas><canvas class="capsule-preview-art capsule-preview-art--b" aria-hidden="true"></canvas>` : ""}
+    ${usesIntegratedCustomization ? `<canvas class="capsule-preview-art capsule-preview-art--a" aria-hidden="true"></canvas><canvas class="capsule-preview-art capsule-preview-art--b" aria-hidden="true"></canvas>` : ""}
     ${CapsuleWindow(items)}
-    ${custom && !isSetupPreview ? `<span class="capsule-accent-paint capsule-accent-paint--base"></span><span class="capsule-accent-paint capsule-accent-paint--support"></span><span class="capsule-accent-bolt">✦</span>` : ""}
+    ${custom && !usesIntegratedCustomization ? `<span class="capsule-accent-paint capsule-accent-paint--base"></span><span class="capsule-accent-paint capsule-accent-paint--support"></span><span class="capsule-accent-bolt">✦</span>` : ""}
     <strong class="capsule-art-label ${machineName.length > 18 ? "is-long" : ""}">${custom ? `<span class="js-setup-name">${esc(machineName)}</span>` : "EVENT<br>CAPSULE"}</strong>
-    ${isSetupPreview ? `<span class="capsule-preview-sticker" data-sticker="${stickerKey}" aria-hidden="true">${CapsulePreviewSticker(stickerKey)}</span>` : custom ? `<span class="capsule-event-sticker" data-sticker="${stickerKey}" aria-hidden="true"><span class="sticker-icon">${sticker.mark}</span></span>` : ""}
+    ${usesIntegratedCustomization ? `<span class="capsule-preview-sticker" data-sticker="${stickerKey}" aria-hidden="true">${CapsulePreviewSticker(stickerKey)}</span>` : custom ? `<span class="capsule-event-sticker" data-sticker="${stickerKey}" aria-hidden="true"><span class="sticker-icon">${sticker.mark}</span></span>` : ""}
     <span class="capsule-art-scribble capsule-art-scribble--one">///</span>
     <span class="capsule-art-scribble capsule-art-scribble--two">✦</span>
   </div>`;
@@ -925,7 +926,10 @@ function EventPulseScreen() {
 
 function renderApp() {
   app.innerHTML = `${SpaceBackground()}<div class="app-shell">${LandingScreen()}${MyCapsulesScreen()}${CreateCapsuleScreen()}${EventScreen()}${EventPulseScreen()}</div>${AddMemoryModal()}${DrawModal()}${MemoryViewer()}${InviteModal()}`;
-  requestAnimationFrame(() => updateSetupCapsuleArtwork(document.querySelector(".capsule-machine--setup"), CAPSULE_COLORS[appState.capsuleDraft.accentColor]?.value || CAPSULE_COLORS.blue.value));
+  requestAnimationFrame(() => {
+    updateCapsuleArtwork(document.querySelector(".capsule-machine--setup"), CAPSULE_COLORS[appState.capsuleDraft.accentColor]?.value || CAPSULE_COLORS.blue.value);
+    updateCapsuleArtwork(document.querySelector(".capsule-machine--event"), CAPSULE_COLORS[appState.event?.accentColor || appState.capsuleDraft.accentColor]?.value || CAPSULE_COLORS.blue.value);
+  });
   if (appState.screen === "pulse") requestAnimationFrame(drawPulseChart);
 }
 
@@ -1035,7 +1039,7 @@ function colorizeCapsuleArtwork(machine, accentColor) {
   requestAnimationFrame(() => canvases.forEach((item, index) => item.classList.toggle("is-active", index === nextIndex)));
 }
 
-function updateSetupCapsuleArtwork(machine, accentColor) {
+function updateCapsuleArtwork(machine, accentColor) {
   if (!machine || machine.dataset.previewAccent === accentColor) return;
   machine.dataset.pendingPreviewAccent = accentColor;
   const source = machine.querySelector(".capsule-art");
@@ -1063,7 +1067,7 @@ function updateCapsuleSetupPreview() {
   const machine = document.querySelector(".capsule-machine--setup");
   const accentColor = CAPSULE_COLORS[draft.accentColor]?.value || CAPSULE_COLORS.blue.value;
   machine?.style.setProperty("--capsule-accent", accentColor);
-  updateSetupCapsuleArtwork(machine, accentColor);
+  updateCapsuleArtwork(machine, accentColor);
   if (machine) machine.setAttribute("aria-label", `Illustrated capsule preview for ${name}`);
   const machineSticker = machine?.querySelector(".capsule-preview-sticker");
   if (machineSticker) {
