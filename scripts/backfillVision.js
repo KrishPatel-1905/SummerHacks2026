@@ -3,9 +3,18 @@ import { pathToFileURL } from "node:url";
 import { connectToDatabase, disconnectFromDatabase } from "../server/config/db.js";
 import { Memory } from "../server/models/Memory.js";
 import { processPendingVisionBatch } from "../server/services/visionProcessor.js";
+import { VISION_ANALYSIS_VERSION } from "../server/services/visionAnalysisService.js";
 
 export const eligibleVisionMemories = { $or: [{ imageUrl: { $ne: null } }, { envelopeDrawing: { $ne: null } }] };
-export const memoriesNeedingVisionBackfill = { $and: [eligibleVisionMemories, { $or: [{ visionStatus: { $exists: false } }, { visionStatus: { $in: ["skipped", "failed"] } }] }] };
+export const memoriesNeedingVisionBackfill = {
+  $and: [eligibleVisionMemories, {
+    $or: [
+      { visionStatus: { $exists: false } },
+      { visionStatus: { $in: ["skipped", "failed"] } },
+      { visionStatus: "complete", visionAnalysisVersion: { $ne: VISION_ANALYSIS_VERSION } },
+    ],
+  }],
+};
 
 export async function runVisionBackfill({
   apply = false,

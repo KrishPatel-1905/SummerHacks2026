@@ -14,6 +14,7 @@ let Event;
 let Memory;
 let analyzePendingMemories;
 let processMemoryVision;
+let queueStaleEventVision;
 let imageStorage;
 
 const jsonRequest = (body) => ({
@@ -48,6 +49,7 @@ before(async () => {
   Memory = memoryModule.Memory;
   analyzePendingMemories = analysisModule.analyzePendingMemories;
   processMemoryVision = visionModule.processMemoryVision;
+  queueStaleEventVision = visionModule.queueStaleEventVision;
   imageStorage = storageModule.imageStorage;
   server = createApp().listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
@@ -297,14 +299,23 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(backfilledPulse.pulse.pendingAnalysisCount, 0);
   assert.equal((await Memory.findById(pendingMemory._id)).analysisStatus, "complete");
   assert.equal(backfilledPulse.pulse.visionCoverage, 100);
-  assert.deepEqual(backfilledPulse.pulse.visualSignals.find(({ label }) => label === "laptop"), {
-    label: "laptop", count: 2, photoCount: 2, drawingCount: 0, sources: ["photo"],
+  assert.equal(backfilledPulse.pulse.staleVisionCount, 1);
+  assert.deepEqual(backfilledPulse.pulse.visualSignals.find(({ label }) => label === "screen use"), {
+    label: "screen use", count: 2, photoCount: 2, drawingCount: 0, sources: ["photo"],
   });
   assert.deepEqual(backfilledPulse.pulse.visualSignals.find(({ label }) => label === "star"), {
     label: "star", count: 2, photoCount: 0, drawingCount: 2, sources: ["drawing"],
   });
   assert.equal(backfilledPulse.pulse.themes[0].label, "teamwork");
-  assert.match(backfilledPulse.pulse.story, /laptop kept appearing/i);
+  assert.match(backfilledPulse.pulse.story, /screen use kept appearing/i);
+
+  const queuedStaleVision = await queueStaleEventVision(event.id);
+  assert.equal(queuedStaleVision.modifiedCount, 1);
+  assert.equal((await Memory.findById(pendingMemory._id)).visionStatus, "pending");
+  assert.equal((await Memory.findById(memory.id)).visionStatus, "complete");
+  await Memory.updateOne({ _id: pendingMemory._id }, {
+    $set: { visionStatus: "complete", visionAnalysisVersion: "gemini-vision-v2" },
+  });
 
   const { GridFsStorage } = await import("../storage/gridFsStorage.js");
   const gridStorage = new GridFsStorage("testUploads");

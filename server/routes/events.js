@@ -275,7 +275,7 @@ router.get("/:eventId/pulse", requireEventId, requireCapsuleAccess, async (reque
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
   const pulse = await getEventPulseData(request.params.eventId);
   publishEventUpdate(request.params.eventId, "pulse-updated", { pulse });
-  if (pulse.pendingVisionCount) scheduleEventVision(request.params.eventId);
+  if (pulse.pendingVisionCount || pulse.staleVisionCount) scheduleEventVision(request.params.eventId);
   response.json({ pulse });
 });
 

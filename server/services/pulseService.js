@@ -1,6 +1,54 @@
 import mongoose from "mongoose";
 import { Memory } from "../models/Memory.js";
 import { Event } from "../models/Event.js";
+import {
+  DRAWING_MOTIF_LABELS,
+  PHOTO_ACTIVITY_LABELS,
+  VISION_ANALYSIS_VERSION,
+} from "./visionAnalysisService.js";
+
+const MAX_VISUAL_SIGNALS = 4;
+const PHOTO_LABELS = new Set(PHOTO_ACTIVITY_LABELS);
+const DRAWING_LABELS = new Set(DRAWING_MOTIF_LABELS);
+const LEGACY_PHOTO_LABELS = new Map([
+  ["laptop", "screen use"],
+  ["computer", "screen use"],
+  ["desktop computer", "screen use"],
+  ["monitor", "screen use"],
+  ["keyboard", "screen use"],
+  ["smartphone", "screen use"],
+  ["phone", "screen use"],
+  ["tablet", "screen use"],
+  ["screen", "screen use"],
+  ["crowd", "celebrating"],
+  ["confetti", "celebrating"],
+  ["raised hand", "celebrating"],
+  ["spotlight", "performing"],
+  ["stage light", "performing"],
+]);
+const LEGACY_DRAWING_LABELS = new Map([
+  ["scribble", "abstract doodle"],
+  ["doodle", "abstract doodle"],
+  ["line art", "abstract doodle"],
+  ["abstract art", "abstract doodle"],
+  ["smiley face", "smiley"],
+  ["text", "word art"],
+  ["word", "word art"],
+]);
+
+export function canonicalizeVisualSignal(label, source) {
+  const normalized = String(label || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (source === "photo") {
+    if (PHOTO_LABELS.has(normalized)) return normalized;
+    return LEGACY_PHOTO_LABELS.get(normalized) || null;
+  }
+  if (source === "drawing") {
+    if (DRAWING_LABELS.has(normalized)) return normalized;
+    return LEGACY_DRAWING_LABELS.get(normalized) || null;
+  }
+  return null;
+}
 
 function increment(map, label) {
   const normalized = String(label || "").trim().toLowerCase();
@@ -18,7 +66,7 @@ export async function getEventPulseData(eventId) {
   const event = await Event.findById(objectId).select("timezone");
   const timezone = event?.timezone || "UTC";
 
-  const [total, analyzed, moodGroups, rawTimeline, memories, visionEligibleMemoryCount, visionAnalyzedMemoryCount, pendingVisionCount, failedVisionCount] = await Promise.all([
+  const [total, analyzed, moodGroups, rawTimeline, memories, visionEligibleMemoryCount, visionAnalyzedMemoryCount, pendingVisionCount, failedVisionCount, staleVisionCount] = await Promise.all([
     Memory.countDocuments(baseMatch),
     Memory.countDocuments({ ...baseMatch, analysisStatus: "complete", analysis: { $ne: null } }),
     Memory.aggregate([
@@ -31,11 +79,12 @@ export async function getEventPulseData(eventId) {
       { $group: { _id: { $dateTrunc: { date: "$createdAt", unit: "hour", timezone } }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),
-    Memory.find(baseMatch).select("analysisStatus analysis.themes analysis.visualTags imageUrl envelopeDrawing visionStatus +visionAnalysis").lean(),
+    Memory.find(baseMatch).select("analysisStatus analysis.themes analysis.visualTags imageUrl envelopeDrawing visionStatus visionAnalysisVersion +visionAnalysis").lean(),
     Memory.countDocuments(eligibleMatch),
     Memory.countDocuments({ ...eligibleMatch, visionStatus: "complete" }),
     Memory.countDocuments({ $and: [eligibleMatch, { $or: [{ visionStatus: { $in: ["pending", "processing"] } }, { visionStatus: { $exists: false } }] }] }),
     Memory.countDocuments({ ...eligibleMatch, visionStatus: "failed" }),
+    Memory.countDocuments({ ...eligibleMatch, visionStatus: "complete", visionAnalysisVersion: { $ne: VISION_ANALYSIS_VERSION } }),
   ]);
 
   const moods = moodGroups.map((item) => ({
@@ -62,7 +111,7 @@ export async function getEventPulseData(eventId) {
     if (memory.visionStatus !== "complete") continue;
     const addSignals = (signals, source) => {
       for (const signal of signals || []) {
-        const label = String(signal.label || "").toLowerCase();
+        const label = canonicalizeVisualSignal(signal.label, source);
         if (!label) continue;
         const item = visualMap.get(label) || { label, memories: new Set(), photo: new Set(), drawing: new Set() };
         item.memories.add(memoryId);
@@ -81,9 +130,9 @@ export async function getEventPulseData(eventId) {
     photoCount: item.photo.size,
     drawingCount: item.drawing.size,
     sources: [item.photo.size ? "photo" : null, item.drawing.size ? "drawing" : null].filter(Boolean),
-  })).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)).slice(0, 8);
+  })).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)).slice(0, MAX_VISUAL_SIGNALS);
   if (!visualSignals.length) {
-    visualSignals = ranked(legacyVisualCounts).map((item) => ({
+    visualSignals = ranked(legacyVisualCounts, MAX_VISUAL_SIGNALS).map((item) => ({
       ...item,
       photoCount: item.label === "photo" ? item.count : 0,
       drawingCount: item.label === "drawing" ? item.count : 0,
@@ -118,6 +167,7 @@ export async function getEventPulseData(eventId) {
     visionAnalyzedMemoryCount,
     pendingVisionCount,
     failedVisionCount,
+    staleVisionCount,
     visionCoverage: visionEligibleMemoryCount ? Math.round((visionAnalyzedMemoryCount / visionEligibleMemoryCount) * 100) : 0,
     timezone,
   };

@@ -904,7 +904,7 @@ function MoodRows() {
 function EventPulseScreen() {
   const pulse = appState.pulse || { memoryCount: appState.memoryCount, moods: [], themes: [], visualTags: [], timeline: [], peak: null, analyzedMemoryCount: 0, pendingAnalysisCount: 0, analysisCoverage: 0, story: "" };
   const themes = pulse.themes.length ? pulse.themes.slice(0, 6) : [{ label: "analysis pending" }];
-  const objects = (pulse.visualSignals?.length ? pulse.visualSignals : pulse.visualTags || []).slice(0, 8);
+  const objects = (pulse.visualSignals?.length ? pulse.visualSignals : pulse.visualTags || []).slice(0, 4);
   if (!objects.length) objects.push({ label: "pending", empty: true, count: 0, sources: [] });
   const peakLabel = pulse.peak ? new Date(pulse.peak.bucket).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "waiting...";
   const story = pulse.story || "The capsule is waiting for its first memory.";
@@ -915,7 +915,7 @@ function EventPulseScreen() {
         ${HandwrittenHeading("EVENT PULSE", { level: 1, className: "pulse-title", note: "what did today feel like?" })}
         <div class="memory-total"><strong>${pulse.memoryCount}</strong> Memories</div>
         <p class="pulse-coverage">${pulse.analysisCoverage}% analyzed${pulse.pendingAnalysisCount ? ` · ${pulse.pendingAnalysisCount} pending` : ""}</p>
-        <p class="pulse-vision-coverage">◉ ${pulse.visionCoverage ?? 0}% visually analyzed${pulse.pendingVisionCount ? ` · ${pulse.pendingVisionCount} pending` : ""}${pulse.failedVisionCount ? ` · ${pulse.failedVisionCount} unavailable` : ""}</p>
+        <p class="pulse-vision-coverage">◉ ${pulse.visionCoverage ?? 0}% visually analyzed${pulse.pendingVisionCount ? ` · ${pulse.pendingVisionCount} pending` : ""}${pulse.staleVisionCount ? ` · ${pulse.staleVisionCount} refreshing` : ""}${pulse.failedVisionCount ? ` · ${pulse.failedVisionCount} unavailable` : ""}</p>
         <h2 class="scribble-subhead">How the room felt</h2>${MoodRows()}
         <h2 class="scribble-subhead">What everyone talked about</h2>
         <div class="theme-cloud">${themes.map((theme, index) => `<span class="theme theme--${PULSE_COLORS[index % PULSE_COLORS.length]}">${esc(theme.label.toUpperCase())}</span>`).join("")}</div>

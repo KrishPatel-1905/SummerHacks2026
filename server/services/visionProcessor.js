@@ -91,6 +91,23 @@ export async function processPendingVisionBatch({ eventId = null, limit = 10, co
   return summary;
 }
 
+export async function queueStaleEventVision(eventId) {
+  return Memory.updateMany({
+    eventId,
+    visionStatus: "complete",
+    visionAnalysisVersion: { $ne: VISION_ANALYSIS_VERSION },
+    $or: [{ imageUrl: { $ne: null } }, { envelopeDrawing: { $ne: null } }],
+  }, {
+    $set: {
+      visionStatus: "pending",
+      visionAttempts: 0,
+      visionError: null,
+      visionStartedAt: null,
+      nextVisionAttemptAt: null,
+    },
+  });
+}
+
 function keepAlive(promise) {
   const guarded = promise.catch((error) => console.error({ component: "vision-analysis", error: error?.message || error }));
   if (process.env.VERCEL) waitUntil(guarded);
@@ -104,5 +121,8 @@ export function scheduleMemoryVision(memoryId) {
 
 export function scheduleEventVision(eventId) {
   if (!process.env.GEMINI_API_KEY) return null;
-  return keepAlive(processPendingVisionBatch({ eventId, limit: 10, concurrency: 2 }));
+  return keepAlive((async () => {
+    await queueStaleEventVision(eventId);
+    return processPendingVisionBatch({ eventId, limit: 10, concurrency: 2 });
+  })());
 }

@@ -26,7 +26,7 @@ test("vision backfill dry-run reports work without mutating records", async () =
   assert.match(messages[1], /dry run only/i);
 });
 
-test("vision backfill is resumable, skips completed and media-less records, and preserves partial failures", async () => {
+test("vision backfill is resumable, refreshes outdated analyses, skips current and media-less records, and preserves partial failures", async () => {
   const updates = [];
   const batches = [
     { completed: 2, failed: 1, pending: 1, skipped: 1 },
@@ -45,5 +45,7 @@ test("vision backfill is resumable, skips completed and media-less records, and 
   assert.deepEqual(result, { mode: "complete", completed: 2, failed: 1, pending: 1, skipped: 1 });
   assert.equal(updates.length, 2);
   assert.deepEqual(memoriesNeedingVisionBackfill.$and[1].$or[1].visionStatus.$in, ["skipped", "failed"]);
+  assert.equal(memoriesNeedingVisionBackfill.$and[1].$or[2].visionStatus, "complete");
+  assert.deepEqual(memoriesNeedingVisionBackfill.$and[1].$or[2].visionAnalysisVersion, { $ne: "gemini-vision-v2" });
   assert.equal(updates[1].filter.visionStatus.$ne, "complete");
 });

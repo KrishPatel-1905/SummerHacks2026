@@ -19,6 +19,10 @@ npm run dev
 
 Set `MONGODB_URI` in `.env`, then open [http://localhost:3000](http://localhost:3000).
 
+## Event Pulse Analysis
+
+With `GEMINI_API_KEY` configured, photos and envelope drawings are analyzed asynchronously. Photos use a bounded activity taxonomy such as working, studying, celebrating, phone use, or doomscrolling instead of listing incidental objects. Drawing synonyms collapse into broad motifs, and Event Pulse shows at most four ranked visual signals. Older vision results refresh automatically when Event Pulse opens.
+
 ## Available Commands
 
 - `npm run dev` — start the development server

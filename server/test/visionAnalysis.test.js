@@ -3,8 +3,11 @@ import test from "node:test";
 import sharp from "sharp";
 import {
   analyzeVision,
+  DRAWING_MOTIF_LABELS,
   normalizeVisionResult,
+  PHOTO_ACTIVITY_LABELS,
   preprocessVisionInputs,
+  VISION_ANALYSIS_VERSION,
 } from "../services/visionAnalysisService.js";
 
 const onePixelPng = Buffer.from(
@@ -16,15 +19,16 @@ const markedDrawing = await sharp({
   create: { width: 4, height: 4, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
 }).composite([{ input: Buffer.from(`<svg width="4" height="4"><path d="M0 0L4 4" stroke="black"/></svg>`) }]).png().toBuffer();
 
-test("vision results normalize labels, filter weak guesses, and preserve provenance", () => {
+test("vision results consolidate aliases, reject raw objects, and preserve provenance", () => {
   const result = normalizeVisionResult({
     photoSignals: [
       { label: " Laptops ", confidence: 0.92 },
       { label: "People", confidence: 0.59 },
-      { label: "laptop", confidence: 0.81 },
+      { label: "baseball cap", confidence: 0.99 },
     ],
     drawingSignals: [
-      { label: "Stars", confidence: 0.95 },
+      { label: "Scribble", confidence: 0.95 },
+      { label: "line art", confidence: 0.83 },
       { label: "alex@example.com", confidence: 0.99 },
     ],
     visualThemes: [
@@ -33,9 +37,36 @@ test("vision results normalize labels, filter weak guesses, and preserve provena
     ],
   });
 
-  assert.deepEqual(result.photoSignals, [{ label: "laptop", confidence: 0.92 }]);
-  assert.deepEqual(result.drawingSignals, [{ label: "star", confidence: 0.95 }]);
+  assert.deepEqual(result.photoSignals, [{ label: "screen use", confidence: 0.92 }]);
+  assert.deepEqual(result.drawingSignals, [{ label: "abstract doodle", confidence: 0.95 }]);
   assert.deepEqual(result.visualThemes, [{ label: "teamwork", confidence: 0.88 }]);
+});
+
+test("photo behavior labels use stricter confidence and cap each source at two categories", () => {
+  const result = normalizeVisionResult({
+    photoSignals: [
+      { label: "working", confidence: 0.91 },
+      { label: "doomscrolling", confidence: 0.79 },
+      { label: "doomscrolling", confidence: 0.82 },
+      { label: "phone use", confidence: 0.76 },
+      { label: "screen use", confidence: 0.69 },
+    ],
+    drawingSignals: [
+      { label: "star", confidence: 0.88 },
+      { label: "heart", confidence: 0.8 },
+      { label: "flower", confidence: 0.75 },
+    ],
+    visualThemes: [{ label: "productivity", confidence: 0.86 }],
+  });
+
+  assert.deepEqual(result.photoSignals, [
+    { label: "working", confidence: 0.91 },
+    { label: "doomscrolling", confidence: 0.82 },
+  ]);
+  assert.deepEqual(result.drawingSignals, [
+    { label: "star", confidence: 0.88 },
+    { label: "heart", confidence: 0.8 },
+  ]);
 });
 
 test("vision preprocessing bounds photos and makes transparent drawings visible", async () => {
@@ -88,7 +119,16 @@ test("Gemini receives both visual sources and schema-constrained output", async 
   assert.equal(request.store, false);
   assert.equal(request.response_format.mime_type, "application/json");
   assert.equal(request.input.filter(({ type }) => type === "image").length, 2);
-  assert.equal(result.analysis.photoSignals[0].label, "laptop");
+  assert.equal(request.response_format.schema.properties.photoSignals.maxItems, 2);
+  assert.deepEqual(request.response_format.schema.properties.photoSignals.items.properties.label.enum, PHOTO_ACTIVITY_LABELS);
+  assert.deepEqual(request.response_format.schema.properties.drawingSignals.items.properties.label.enum, DRAWING_MOTIF_LABELS);
+  const instructions = request.input.filter(({ type }) => type === "text").map(({ text }) => text).join("\n");
+  assert.match(instructions, /laptop alone is not enough/i);
+  assert.match(instructions, /doomscrolling.*passively absorbed/i);
+  assert.match(instructions, /Event photo:/);
+  assert.match(instructions, /Envelope drawing:/);
+  assert.equal(VISION_ANALYSIS_VERSION, "gemini-vision-v2");
+  assert.equal(result.analysis.photoSignals[0].label, "screen use");
   assert.equal(result.analysis.drawingSignals[0].label, "star");
 });
 
