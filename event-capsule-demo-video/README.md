@@ -1,6 +1,6 @@
 # Event Capsule demo videos
 
-Self-contained Remotion project and rendered 65-second hackathon ad variants.
+Self-contained Remotion project and rendered 65-second hackathon ad variants. The videos use a real, automated browser session rather than static product mockups.
 
 ## Finished videos
 
@@ -13,8 +13,11 @@ Both masters are 1920×1080, 30 fps, H.264 video with stereo AAC audio.
 
 ```powershell
 npm install
+npm run capture
 npm run music
 npm run render
 ```
 
-The original music is generated locally by `source/generate-music.mjs`. Product artwork, fonts, narration clips, frame previews, and voice auditions are included in this folder.
+Run the app's `npm run dev:memory` command on port 3100 before `npm run capture`. The capture drives capsule creation, invitation, photo upload, message and mood entry, envelope drawing, memory reveal, and Event Pulse with a visible custom cursor.
+
+The original music is generated locally by `source/generate-music.mjs`. Product artwork, fonts, narration clips, live browser footage, frame previews, and voice auditions are included in this folder.
