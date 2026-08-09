@@ -8,6 +8,7 @@ import { imageStorage } from "./storage/index.js";
 import { Event } from "./models/Event.js";
 import { Memory } from "./models/Memory.js";
 import { normalizeInviteCode } from "./services/eventService.js";
+import { openApiDocument } from "./openapi.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -39,6 +40,7 @@ export function createApp() {
   app.use(express.json({ limit: "64kb" }));
 
   app.get("/health", (_request, response) => response.json({ status: "ok" }));
+  app.get("/api/openapi.json", (_request, response) => response.json(openApiDocument));
   app.get("/ready", async (_request, response) => {
     try {
       const connection = await connectToDatabase();
@@ -56,6 +58,7 @@ export function createApp() {
       next(error);
     }
   });
+  app.use("/api/v1/events", eventRouter);
   app.use("/api/events", eventRouter);
 
   app.use("/assets", express.static(path.join(projectRoot, "assets"), { fallthrough: false, maxAge: "1d" }));

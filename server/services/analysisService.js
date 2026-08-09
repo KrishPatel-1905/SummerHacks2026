@@ -1,4 +1,5 @@
 import { Memory } from "../models/Memory.js";
+import { publishEventUpdate } from "./eventStream.js";
 
 const MOODS = new Map([
   ["🙂", "happy"],
@@ -69,5 +70,22 @@ export async function analyzePendingMemories(eventId, { limit = 100 } = {}) {
       failed += 1;
     }
   }
-  return { completed, failed, remaining: Math.max(0, pending.length - completed - failed) };
+  if (completed || failed) publishEventUpdate(eventId, "analysis-updated", { completed, failed });
+  const remaining = await Memory.countDocuments({ eventId, analysisStatus: "pending" });
+  return { completed, failed, remaining };
+}
+
+export async function analyzePendingBatch({ limit = 100 } = {}) {
+  const eventIds = await Memory.distinct("eventId", { analysisStatus: "pending" });
+  let remainingLimit = limit;
+  const result = { completed: 0, failed: 0, remaining: 0 };
+  for (const eventId of eventIds) {
+    if (remainingLimit <= 0) break;
+    const eventResult = await analyzePendingMemories(eventId, { limit: remainingLimit });
+    result.completed += eventResult.completed;
+    result.failed += eventResult.failed;
+    result.remaining += eventResult.remaining;
+    remainingLimit -= eventResult.completed + eventResult.failed;
+  }
+  return result;
 }

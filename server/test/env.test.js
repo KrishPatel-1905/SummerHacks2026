@@ -9,6 +9,7 @@ test("server configuration validates required and typed values", () => {
   assert.throws(() => readServerConfig({ MONGODB_URI: "mongodb://example", PUBLIC_APP_URL: "not-a-url" }), /PUBLIC_APP_URL/);
   assert.throws(() => readServerConfig({ MONGODB_URI: "mongodb://example", NODE_ENV: "production" }), /PUBLIC_APP_URL/);
   assert.throws(() => readServerConfig({ MONGODB_URI: "mongodb://example", UPLOAD_STORAGE: "unknown" }), /UPLOAD_STORAGE/);
+  assert.throws(() => readServerConfig({ MONGODB_URI: "mongodb://example", ANALYSIS_INTERVAL_MS: "100" }), /ANALYSIS_INTERVAL_MS/);
 
   assert.deepEqual(readServerConfig({
     MONGODB_URI: "mongodb://example",
@@ -17,6 +18,7 @@ test("server configuration validates required and typed values", () => {
     NODE_ENV: "production",
     UPLOAD_STORAGE: "gridfs",
     TRUST_PROXY: "1",
+    ANALYSIS_INTERVAL_MS: "30000",
   }), {
     mongoUri: "mongodb://example",
     port: 3100,
@@ -24,5 +26,6 @@ test("server configuration validates required and typed values", () => {
     nodeEnv: "production",
     uploadStorage: "gridfs",
     trustProxy: 1,
+    analysisIntervalMs: 30000,
   });
 });

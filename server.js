@@ -3,12 +3,14 @@ import { createApp } from "./server/app.js";
 import { connectToDatabase, disconnectFromDatabase } from "./server/config/db.js";
 import { readServerConfig } from "./server/config/env.js";
 import { reconcileEventMemoryCounts } from "./server/services/eventService.js";
+import { startAnalysisWorker } from "./server/services/analysisWorker.js";
 
 try {
-  const { port, publicAppUrl } = readServerConfig();
+  const { port, publicAppUrl, analysisIntervalMs } = readServerConfig();
   if (publicAppUrl) process.env.PUBLIC_APP_URL = publicAppUrl;
   await connectToDatabase();
   const reconciledEvents = await reconcileEventMemoryCounts();
+  const stopAnalysisWorker = startAnalysisWorker({ intervalMs: analysisIntervalMs });
   const app = createApp();
   const server = app.listen(port, () => {
     console.log(`Event Capsule is ready at http://localhost:${port}`);
@@ -17,6 +19,7 @@ try {
 
   async function shutdown(signal) {
     console.log(`${signal} received; shutting down.`);
+    stopAnalysisWorker();
     await new Promise((resolve) => server.close(resolve));
     await disconnectFromDatabase();
   }

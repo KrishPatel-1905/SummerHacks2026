@@ -30,5 +30,10 @@ export function readServerConfig(environment = process.env) {
       ? Number(environment.TRUST_PROXY)
       : false;
 
-  return { mongoUri, port, publicAppUrl, nodeEnv, uploadStorage, trustProxy };
+  const analysisIntervalMs = Number(environment.ANALYSIS_INTERVAL_MS || 15_000);
+  if (!Number.isInteger(analysisIntervalMs) || analysisIntervalMs < 1_000 || analysisIntervalMs > 3_600_000) {
+    throw new Error("ANALYSIS_INTERVAL_MS must be an integer between 1000 and 3600000.");
+  }
+
+  return { mongoUri, port, publicAppUrl, nodeEnv, uploadStorage, trustProxy, analysisIntervalMs };
 }

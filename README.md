@@ -42,6 +42,8 @@ New memories are analyzed automatically from the participant-selected mood, mess
 
 Production startup validates configuration and connects to MongoDB before the server begins listening.
 
+API v1 is served under `/api/v1`, with the machine-readable contract at `GET /api/openapi.json`. Legacy `/api/events` routes remain available for backward compatibility.
+
 ## Access and ownership
 
 Creating a capsule returns a one-time owner token. The browser stores it locally and uses it for owner-only controls such as closing or reopening submissions and rotating the invite code. Owner tokens are stored in MongoDB only as SHA-256 hashes. Capsule data APIs require the current capsule code, and code-entry attempts are rate limited.

@@ -5,6 +5,7 @@ import {
 } from "./mockData.js";
 
 const MEMORY_MESSAGE_MAX_LENGTH = 50;
+const API_ROOT = "/api/v1/events";
 const today = new Date();
 const todayInputValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
@@ -14,6 +15,7 @@ const appState = {
   event: null,
   ownerToken: null,
   eventStream: null,
+  pendingOwnerToken: null,
   memories: [],
   pulse: null,
   memoryCount: 0,
@@ -127,6 +129,18 @@ function capsuleApi(event, path, options = {}) {
     ...options,
     headers: { ...(options.headers || {}), "x-capsule-code": event.inviteCode },
   });
+}
+
+async function loadAllMemories(event) {
+  const memories = [];
+  let cursor = null;
+  do {
+    const query = cursor ? `?limit=100&after=${encodeURIComponent(cursor)}` : "?limit=100";
+    const page = await capsuleApi(event, `${API_ROOT}/${event.id}/memories${query}`);
+    memories.push(...page.memories);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return memories;
 }
 
 function formatMemoryDate(value) {
@@ -584,6 +598,7 @@ function MemoryPostcard(memory) {
       <span class="memory-author">— ${esc(memory.author || "Anonymous")}</span>
       <span class="writing-lines"></span>
       <div class="memory-meta"><span>♄ ✧</span><span><strong>${formatMemoryDate(memory.createdAt)}</strong><br>${relativeTime(memory.createdAt)}</span></div>
+      ${appState.ownerToken ? `<button type="button" class="memory-delete" data-delete-memory="${esc(memory.id)}">DELETE MEMORY</button>` : ""}
     </div>
   </article>`;
 }
@@ -643,13 +658,15 @@ function InviteModal() {
   const content = `<div class="modal-content invite-content">
     ${HandwrittenHeading("INVITE EVERYONE", { level: 2, className: "modal-title" })}${Doodle("star", "title-doodle")}
     <div class="invite-grid">
-      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${currentEvent ? `<img class="event-qr" src="/api/events/${esc(currentEvent.id)}/qr?code=${encodeURIComponent(currentEvent.inviteCode)}" alt="QR code for this event capsule" />` : ""}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
+      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${currentEvent ? `<img class="event-qr" src="${API_ROOT}/${esc(currentEvent.id)}/qr?code=${encodeURIComponent(currentEvent.inviteCode)}" alt="QR code for this event capsule" />` : ""}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
       <section class="code-side"><h3>INVITE CODE</h3><div class="invite-code">${inviteDisplay(code)}</div><div class="invite-url"><span>♄</span>${esc(inviteUrl().replace(/^https?:\/\//, ""))}</div>
         ${HandDrawnButton("COPY CODE", { tone: "blue", icon: "▣", action: 'data-copy="code"' })}
         ${HandDrawnButton("COPY LINK", { tone: "paper", icon: "↗", action: 'data-copy="link"' })}
         ${appState.ownerToken ? `<div class="owner-controls"><h3>OWNER CONTROLS</h3>
           ${HandDrawnButton(currentEvent.status === "open" ? "CLOSE CAPSULE" : "REOPEN CAPSULE", { tone: "paper", action: 'data-owner-action="toggle-status"' })}
           ${HandDrawnButton("NEW INVITE CODE", { tone: "paper", action: 'data-owner-action="rotate-code"' })}
+          ${HandDrawnButton("COPY OWNER LINK", { tone: "paper", action: 'data-copy="owner"' })}
+          ${HandDrawnButton("DELETE CAPSULE", { tone: "coral", action: 'data-owner-action="delete-capsule"' })}
         </div>` : ""}
       </section>
     </div>
@@ -802,7 +819,7 @@ async function createFrontendCapsule() {
   const draft = { ...appState.capsuleDraft, name: appState.capsuleDraft.name.trim(), description: appState.capsuleDraft.description.trim() };
   try {
     const [{ event, ownerToken }] = await Promise.all([
-      api("/api/events", {
+      api(API_ROOT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draft),
@@ -958,8 +975,13 @@ function ripMemoryEnvelope() {
 
 async function copyValue(kind) {
   if (!appState.event) return;
-  const value = kind === "code" ? appState.event.inviteCode : inviteUrl();
-  try { await navigator.clipboard.writeText(value); showToast(kind === "code" ? "Invite code copied!" : "Invite link copied!"); }
+  const value = kind === "code"
+    ? appState.event.inviteCode
+    : kind === "owner"
+      ? `${inviteUrl()}#owner=${encodeURIComponent(appState.ownerToken)}`
+      : inviteUrl();
+  const successMessage = kind === "code" ? "Invite code copied!" : kind === "owner" ? "Private owner link copied!" : "Invite link copied!";
+  try { await navigator.clipboard.writeText(value); showToast(successMessage); }
   catch { showToast(`Copy this: ${value}`); }
 }
 
@@ -969,7 +991,11 @@ function setInlineError(id, message = "") {
 }
 
 async function enterEvent(event, { replaceHistory = false, announce = "" } = {}) {
-  const { memories } = await capsuleApi(event, `/api/events/${event.id}/memories`);
+  const memories = await loadAllMemories(event);
+  if (appState.pendingOwnerToken) {
+    storeOwnerToken(event.id, appState.pendingOwnerToken);
+    appState.pendingOwnerToken = null;
+  }
   appState.event = event;
   appState.ownerToken = getStoredOwnerToken(event.id);
   appState.memories = memories;
@@ -999,7 +1025,7 @@ function refreshLiveEventUi() {
 function connectEventStream() {
   closeEventStream();
   if (!appState.event || typeof EventSource === "undefined") return;
-  const stream = new EventSource(`/api/events/${appState.event.id}/stream?code=${encodeURIComponent(appState.event.inviteCode)}`);
+  const stream = new EventSource(`${API_ROOT}/${appState.event.id}/stream?code=${encodeURIComponent(appState.event.inviteCode)}`);
   appState.eventStream = stream;
   stream.onmessage = async ({ data }) => {
     let update;
@@ -1023,8 +1049,7 @@ function connectEventStream() {
       if (update.type === "code-rotated") {
         window.history.replaceState({ inviteCode: appState.event.inviteCode }, "", `/${appState.event.inviteCode}`);
         try {
-          const { memories } = await capsuleApi(appState.event, `/api/events/${appState.event.id}/memories`);
-          appState.memories = memories;
+          appState.memories = await loadAllMemories(appState.event);
         } catch { /* Existing screen remains usable while the stream reconnects. */ }
         connectEventStream();
       }
@@ -1034,6 +1059,10 @@ function connectEventStream() {
       appState.pulse = update.data.pulse;
       appState.memoryCount = update.data.pulse.memoryCount;
       if (appState.screen === "pulse") renderApp();
+    }
+    if (update.type === "analysis-updated") {
+      appState.pulse = null;
+      if (appState.screen === "pulse") showPulse();
     }
     if (update.type === "event-deleted") {
       removeStoredOwnerToken(appState.event.id);
@@ -1056,7 +1085,7 @@ async function runOwnerAction(action) {
   try {
     if (action === "toggle-status") {
       const status = appState.event.status === "open" ? "closed" : "open";
-      const { event } = await ownerApi(`/api/events/${appState.event.id}`, {
+      const { event } = await ownerApi(`${API_ROOT}/${appState.event.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
@@ -1067,17 +1096,46 @@ async function runOwnerAction(action) {
       showToast(status === "open" ? "Capsule reopened." : "Capsule closed to new memories.");
     }
     if (action === "rotate-code") {
-      const { event } = await ownerApi(`/api/events/${appState.event.id}/code`, { method: "POST" });
+      const { event } = await ownerApi(`${API_ROOT}/${appState.event.id}/code`, { method: "POST" });
       appState.event = event;
       window.history.replaceState({ inviteCode: event.inviteCode }, "", `/${event.inviteCode}`);
       renderApp();
       openModal("invite");
       showToast(`New invite code: ${inviteDisplay(event.inviteCode)}`);
     }
+    if (action === "delete-capsule") {
+      if (!window.confirm("Delete this capsule and every memory permanently?")) return;
+      const deletedEventId = appState.event.id;
+      await ownerApi(`${API_ROOT}/${deletedEventId}`, { method: "DELETE" });
+      removeStoredOwnerToken(deletedEventId);
+      closeEventStream();
+      appState.event = null;
+      appState.ownerToken = null;
+      appState.memories = [];
+      appState.memoryCount = 0;
+      appState.screen = "landing";
+      window.history.replaceState({}, "", "/");
+      renderApp();
+      showToast("Capsule deleted.");
+    }
   } catch (error) {
     showToast(error.message || "Owner action failed.");
   } finally {
     appState.busy = false;
+  }
+}
+
+async function deleteMemory(memoryId) {
+  if (!appState.event || !appState.ownerToken || !window.confirm("Delete this memory permanently?")) return;
+  try {
+    await ownerApi(`${API_ROOT}/${appState.event.id}/memories/${memoryId}`, { method: "DELETE" });
+    appState.memories = appState.memories.filter((memory) => memory.id !== memoryId);
+    appState.memoryCount = Math.max(0, appState.memoryCount - 1);
+    closeModal("viewer");
+    renderApp();
+    showToast("Memory deleted.");
+  } catch (error) {
+    showToast(error.message || "Memory could not be deleted.");
   }
 }
 
@@ -1092,7 +1150,7 @@ async function joinCapsule(form) {
   appState.busy = true;
   showToast("finding capsule...");
   try {
-    const { event } = await api(`/api/events/join/${code}`);
+    const { event } = await api(`${API_ROOT}/join/${code}`);
     await enterEvent(event, { announce: `Joined ${event.name} ✦` });
   } catch (error) {
     setInlineError("join-error", error.message || "Couldn’t find that capsule.");
@@ -1104,7 +1162,7 @@ async function joinCapsule(form) {
 async function loadEventByCode(code, { replaceHistory = true } = {}) {
   showToast("opening capsule...");
   try {
-    const { event } = await api(`/api/events/join/${code}`);
+    const { event } = await api(`${API_ROOT}/join/${code}`);
     await enterEvent(event, { replaceHistory });
   } catch (error) {
     appState.event = null; appState.memories = []; appState.memoryCount = 0; appState.screen = "landing";
@@ -1121,7 +1179,7 @@ async function showPulse() {
   renderApp();
   showToast("reading the event pulse...");
   try {
-    const { pulse } = await capsuleApi(appState.event, `/api/events/${appState.event.id}/pulse`);
+    const { pulse } = await capsuleApi(appState.event, `${API_ROOT}/${appState.event.id}/pulse`);
     appState.pulse = pulse;
     appState.memoryCount = pulse.memoryCount;
     renderApp();
@@ -1170,7 +1228,7 @@ async function submitMemory({ skipDrawing = false } = {}) {
     if (appState.photoFile) form.set("image", appState.photoFile, appState.photoFile.name);
     if (drawing) form.set("envelopeDrawing", drawing, "envelope-drawing.png");
 
-    const { memory, memoryCount } = await capsuleApi(appState.event, `/api/events/${appState.event.id}/memories`, { method: "POST", body: form });
+    const { memory, memoryCount } = await capsuleApi(appState.event, `${API_ROOT}/${appState.event.id}/memories`, { method: "POST", body: form });
     if (!appState.memories.some((existing) => existing.id === memory.id)) appState.memories.push(memory);
     appState.memoryCount = memoryCount;
     appState.pulse = null;
@@ -1318,6 +1376,7 @@ function bindInteractions() {
     const ripEnvelope = eventTarget.target.closest("[data-rip-memory]"); if (ripEnvelope) ripMemoryEnvelope();
     const copy = eventTarget.target.closest("[data-copy]"); if (copy) copyValue(copy.dataset.copy);
     const ownerAction = eventTarget.target.closest("[data-owner-action]"); if (ownerAction) runOwnerAction(ownerAction.dataset.ownerAction);
+    const deleteMemoryButton = eventTarget.target.closest("[data-delete-memory]"); if (deleteMemoryButton) deleteMemory(deleteMemoryButton.dataset.deleteMemory);
     const send = eventTarget.target.closest("[data-send]"); if (send) submitMemory({ skipDrawing: send.dataset.skipDrawing === "true" });
     const toolButton = eventTarget.target.closest("[data-tool]");
     if (toolButton) {
@@ -1377,4 +1436,6 @@ window.addEventListener("popstate", () => {
 renderApp();
 bindInteractions();
 const initialInviteCode = window.location.pathname.slice(1);
+const initialOwnerToken = new URLSearchParams(window.location.hash.slice(1)).get("owner");
+if (initialOwnerToken) appState.pendingOwnerToken = initialOwnerToken;
 if (/^\d{6}$/.test(initialInviteCode)) loadEventByCode(initialInviteCode);

@@ -6,7 +6,7 @@ import { Event } from "../models/Event.js";
 import { Memory } from "../models/Memory.js";
 import { imageStorage } from "../storage/index.js";
 import { createRateLimit } from "../middleware/rateLimit.js";
-import { analyzeMemory, analyzePendingMemories } from "../services/analysisService.js";
+import { analyzeMemory } from "../services/analysisService.js";
 import { validateImageFile } from "../services/imageValidation.js";
 import { publishEventUpdate, subscribeToEvent } from "../services/eventStream.js";
 import {
@@ -146,8 +146,22 @@ router.get("/:eventId", requireEventId, requireCapsuleAccess, async (request, re
 router.get("/:eventId/memories", requireEventId, requireCapsuleAccess, async (request, response) => {
   const exists = await Event.exists({ _id: request.params.eventId });
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
-  const memories = await Memory.find({ eventId: request.params.eventId }).sort({ createdAt: 1 });
-  response.json({ memories: memories.map((memory) => serializeMemory(memory, request.capsuleEvent.inviteCode)) });
+  const requestedLimit = Number(request.query.limit || 100);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+    return response.status(400).json({ error: "Memory page limit must be between 1 and 100." });
+  }
+  const filter = { eventId: request.params.eventId };
+  if (request.query.after) {
+    if (!mongoose.isValidObjectId(request.query.after)) return response.status(400).json({ error: "Memory cursor is invalid." });
+    filter._id = { $gt: new mongoose.Types.ObjectId(request.query.after) };
+  }
+  const page = await Memory.find(filter).sort({ _id: 1 }).limit(requestedLimit + 1);
+  const hasMore = page.length > requestedLimit;
+  const memories = hasMore ? page.slice(0, requestedLimit) : page;
+  response.json({
+    memories: memories.map((memory) => serializeMemory(memory, request.capsuleEvent.inviteCode)),
+    nextCursor: hasMore ? String(memories.at(-1)._id) : null,
+  });
 });
 
 router.get("/:eventId/memories/random", requireEventId, requireCapsuleAccess, async (request, response) => {
@@ -228,7 +242,6 @@ router.post("/:eventId/memories", requireEventId, memoryLimiter, requireCapsuleA
 router.get("/:eventId/pulse", requireEventId, requireCapsuleAccess, async (request, response) => {
   const exists = await Event.exists({ _id: request.params.eventId });
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
-  await analyzePendingMemories(request.params.eventId);
   const pulse = await getEventPulseData(request.params.eventId);
   publishEventUpdate(request.params.eventId, "pulse-updated", { pulse });
   response.json({ pulse });

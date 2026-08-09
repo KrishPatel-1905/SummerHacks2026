@@ -12,6 +12,7 @@ let uploadDirectory;
 let disconnectFromDatabase;
 let Event;
 let Memory;
+let analyzePendingMemories;
 
 const jsonRequest = (body) => ({
   method: "POST",
@@ -31,15 +32,17 @@ before(async () => {
   process.env.UPLOAD_DIR = uploadDirectory;
   process.env.UPLOAD_STORAGE = "local";
 
-  const [{ createApp }, dbModule, eventModule, memoryModule] = await Promise.all([
+  const [{ createApp }, dbModule, eventModule, memoryModule, analysisModule] = await Promise.all([
     import("../app.js"),
     import("../config/db.js"),
     import("../models/Event.js"),
     import("../models/Memory.js"),
+    import("../services/analysisService.js"),
   ]);
   disconnectFromDatabase = dbModule.disconnectFromDatabase;
   Event = eventModule.Event;
   Memory = memoryModule.Memory;
+  analyzePendingMemories = analysisModule.analyzePendingMemories;
   server = createApp().listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
@@ -63,6 +66,9 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   const readyResponse = await fetch(`${origin}/ready`);
   assert.equal(readyResponse.status, 200);
   assert.equal((await readyResponse.json()).database, "connected");
+  const openApiResponse = await fetch(`${origin}/api/openapi.json`);
+  assert.equal(openApiResponse.status, 200);
+  assert.equal((await openApiResponse.json()).info.version, "1.0.0");
 
   const invalidResponse = await fetch(`${origin}/api/events`, jsonRequest({ name: "" }));
   assert.equal(invalidResponse.status, 400);
@@ -101,6 +107,7 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   const joinResponse = await fetch(`${origin}/api/events/join/${event.inviteCode}`);
   assert.equal(joinResponse.status, 200);
   assert.equal((await joinResponse.json()).event.name, "SummerHacks 2026");
+  assert.equal((await fetch(`${origin}/api/v1/events/join/${event.inviteCode}`)).status, 200);
   assert.equal((await fetch(`${origin}/api/events/join/123`)).status, 400);
   assert.equal((await fetch(`${origin}/api/events/join/999999`)).status, 404);
 
@@ -186,6 +193,7 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
     analysis: null,
   });
   await Event.updateOne({ _id: event.id }, { $inc: { memoryCount: 1 } });
+  await analyzePendingMemories(event.id);
   const backfilledPulse = await (await fetch(`${origin}/api/events/${event.id}/pulse`, capsuleRequest(event))).json();
   assert.equal(backfilledPulse.pulse.pendingAnalysisCount, 0);
   assert.equal((await Memory.findById(pendingMemory._id)).analysisStatus, "complete");
@@ -267,6 +275,17 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   assert.equal(submissions.filter((response) => response.status === 409).length, 2);
   assert.equal((await Event.findById(capacityEvent.id)).memoryCount, 10);
   assert.equal(await Memory.countDocuments({ eventId: capacityEvent.id }), 10);
+  assert.equal((await fetch(`${origin}/api/events/${capacityEvent.id}/memories?after=bad-cursor`, capsuleRequest(capacityEvent))).status, 400);
+  const firstPage = await (await fetch(`${origin}/api/events/${capacityEvent.id}/memories?limit=4`, capsuleRequest(capacityEvent))).json();
+  assert.equal(firstPage.memories.length, 4);
+  assert.ok(firstPage.nextCursor);
+  const secondPage = await (await fetch(`${origin}/api/events/${capacityEvent.id}/memories?limit=4&after=${firstPage.nextCursor}`, capsuleRequest(capacityEvent))).json();
+  assert.equal(secondPage.memories.length, 4);
+  assert.ok(secondPage.nextCursor);
+  const thirdPage = await (await fetch(`${origin}/api/events/${capacityEvent.id}/memories?limit=4&after=${secondPage.nextCursor}`, capsuleRequest(capacityEvent))).json();
+  assert.equal(thirdPage.memories.length, 2);
+  assert.equal(thirdPage.nextCursor, null);
+  assert.equal(new Set([...firstPage.memories, ...secondPage.memories, ...thirdPage.memories].map((item) => item.id)).size, 10);
 
   const deleteEventResponse = await fetch(`${origin}/api/events/${event.id}`, {
     method: "DELETE",
