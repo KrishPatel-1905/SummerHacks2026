@@ -10,12 +10,12 @@ export const moods = [
 ];
 
 export const polaroids = [
-  { caption: "What a night! ♡", scene: "concert", tape: "tan", tilt: -5 },
-  { caption: "Best day ever ☆", scene: "ferris", tape: "lavender", tilt: 4 },
-  { caption: "Our crew ♡", scene: "campfire", tape: "blue", tilt: -3 },
-  { caption: "Adventure time △", scene: "mountains", tape: "tan", tilt: 5 },
-  { caption: "Unforgettable! ✦", scene: "fireworks", tape: "blue", tilt: -4 },
-  { caption: "We did it! ♡", scene: "sunset", tape: "lavender", tilt: 4 },
+  { caption: "What a night! ♡", scene: "concert", tape: "tan", tilt: -5, emoji: "🥳", author: "Maya" },
+  { caption: "Best day ever ☆", scene: "ferris", tape: "lavender", tilt: 4, emoji: "🙂", author: "Noah" },
+  { caption: "Our crew ♡", scene: "campfire", tape: "blue", tilt: -3, emoji: "❤️", author: "Liv" },
+  { caption: "Adventure time △", scene: "mountains", tape: "tan", tilt: 5, emoji: "🤯", author: "Alex" },
+  { caption: "Unforgettable! ✦", scene: "fireworks", tape: "blue", tilt: -4, emoji: "🥹", author: "Sam" },
+  { caption: "We did it! ♡", scene: "sunset", tape: "lavender", tilt: 4, emoji: "😤", author: "Jo" },
 ];
 
 export const capsuleEnvelopes = [
