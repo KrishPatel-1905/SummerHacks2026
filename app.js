@@ -340,12 +340,17 @@ function UploadPlaceholder(compact = false) {
   </div>`;
 }
 
-function Polaroid(item, index, location = "landing") {
-  return `<article class="polaroid polaroid--${location}-${index + 1}" style="--tilt:${item.tilt}deg">
-    ${Tape(item.tape, "polaroid-tape")}
-    ${PhotoScene(item.scene)}
-    <p>${esc(item.caption)}</p>
-    <span class="polaroid-sticker" aria-hidden="true">${["🙂", "❤️", "★", "☻"][index % 4]}</span>
+function LandingPostcard(item, index) {
+  return `<article class="landing-postcard landing-postcard--${index + 1}" style="--tilt:${item.tilt}deg" aria-label="Postcard from ${esc(item.author)}">
+    ${Tape(item.tape, "landing-postcard-tape")}
+    <div class="landing-postcard-photo">${PhotoScene(item.scene)}</div>
+    <div class="landing-postcard-copy">
+      <span class="mood-sticker" aria-hidden="true">${esc(item.emoji)}</span>
+      <span class="stamp landing-postcard-stamp" aria-hidden="true">♄</span>
+      <p>${esc(item.caption)}</p>
+      <span class="landing-postcard-author">— ${esc(item.author)}</span>
+      <span class="landing-postcard-lines" aria-hidden="true"></span>
+    </div>
   </article>`;
 }
 
@@ -428,8 +433,8 @@ function Mascot(type, label) {
 function LandingScreen() {
   return `<main id="landing-screen" class="screen landing-screen ${appState.screen === "landing" ? "is-active" : ""}" data-screen="landing">
     <button type="button" class="landing-archive-link" data-nav="capsules">${Tape("tan", "landing-archive-tape")}<span>MY CAPSULES →</span></button>
-    <div class="landing-polaroids landing-polaroids--left">${polaroids.slice(0, 3).map((p, i) => Polaroid(p, i)).join("")}</div>
-    <div class="landing-polaroids landing-polaroids--right">${polaroids.slice(3).map((p, i) => Polaroid(p, i + 3)).join("")}</div>
+    <div class="landing-postcards landing-postcards--left">${polaroids.slice(0, 3).map((postcard, index) => LandingPostcard(postcard, index)).join("")}</div>
+    <div class="landing-postcards landing-postcards--right">${polaroids.slice(3).map((postcard, index) => LandingPostcard(postcard, index + 3)).join("")}</div>
     <section class="landing-core">
       ${HandwrittenHeading("EVENT\nCAPSULE", { className: "landing-title" })}
       <p class="landing-tagline"><span>Capture this moment together.</span></p>
