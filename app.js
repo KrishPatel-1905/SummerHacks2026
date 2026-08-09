@@ -307,7 +307,7 @@ function MemoryViewer() {
     <button class="close-button viewer-close" data-close="viewer" aria-label="Close memory viewer">×</button>
     ${HandDrawnButton("PREVIOUS", { tone: "paper", icon: "←", className: "memory-nav memory-nav--prev", action: 'data-memory-nav="-1"' })}
     <div class="memory-envelope-stage">
-      <div class="open-envelope"><div class="open-envelope-back"></div><div class="memory-card-slot" id="memory-card-slot">${MemoryPostcard(memory)}</div><div class="open-envelope-front"><span class="open-seal">♄</span></div></div>
+      <div class="open-envelope"><div class="open-envelope-back"></div><div class="memory-card-slot" id="memory-card-slot">${MemoryPostcard(memory)}</div><div class="open-envelope-front"></div><span class="open-seal">♄</span></div>
     </div>
     ${HandDrawnButton("NEXT", { tone: "paper", icon: "→", className: "memory-nav memory-nav--next", action: 'data-memory-nav="1"' })}
   </section>`;
