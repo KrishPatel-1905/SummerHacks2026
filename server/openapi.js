@@ -12,6 +12,17 @@ export const openApiDocument = {
       capsuleCode: { type: "apiKey", in: "header", name: "x-capsule-code" },
       ownerToken: { type: "apiKey", in: "header", name: "x-owner-token" },
     },
+    schemas: {
+      VisualSignal: {
+        type: "object",
+        required: ["label", "count", "photoCount", "drawingCount", "sources"],
+        properties: {
+          label: { type: "string" }, count: { type: "integer", minimum: 1 },
+          photoCount: { type: "integer", minimum: 0 }, drawingCount: { type: "integer", minimum: 0 },
+          sources: { type: "array", items: { type: "string", enum: ["photo", "drawing"] } },
+        },
+      },
+    },
   },
   paths: {
     "/events": {
@@ -45,7 +56,7 @@ export const openApiDocument = {
     },
     "/events/{eventId}/pulse": {
       parameters: [eventIdParameter],
-      get: { summary: "Read database-backed Event Pulse analytics", security: capsuleSecurity, responses: { 200: { description: "Analytics" } } },
+      get: { summary: "Read database-backed Event Pulse analytics", description: "Includes deterministic mood/theme analytics and asynchronous Gemini visual signals with source provenance and coverage.", security: capsuleSecurity, responses: { 200: { description: "Analytics" } } },
     },
     "/events/{eventId}/stream": {
       parameters: [eventIdParameter, { name: "code", in: "query", required: true, schema: { type: "string", pattern: "^[0-9]{6}$" } }],

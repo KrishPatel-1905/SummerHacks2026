@@ -20,6 +20,7 @@ import {
   verifyEventOwner,
 } from "../services/eventService.js";
 import { getEventPulseData } from "../services/pulseService.js";
+import { scheduleEventVision, scheduleMemoryVision } from "../services/visionProcessor.js";
 
 const router = express.Router();
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
@@ -245,9 +246,11 @@ router.post("/:eventId/memories", requireEventId, memoryLimiter, requireCapsuleA
       analysis,
       analysisVersion: "deterministic-v1",
       analyzedAt: new Date(),
+      visionStatus: image || drawing ? (process.env.GEMINI_API_KEY ? "pending" : "skipped") : "skipped",
     });
     const serializedMemory = serializeMemory(memory, request.capsuleEvent.inviteCode);
     publishEventUpdate(request.params.eventId, "memory-added", { memory: serializedMemory, memoryCount: event.memoryCount });
+    if (memory.visionStatus === "pending") scheduleMemoryVision(memory._id);
     response.status(201).json({ memory: serializedMemory, memoryCount: event.memoryCount });
   } catch (error) {
     await Promise.all(savedUrls.map((url) => imageStorage.remove(url)));
@@ -272,6 +275,7 @@ router.get("/:eventId/pulse", requireEventId, requireCapsuleAccess, async (reque
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
   const pulse = await getEventPulseData(request.params.eventId);
   publishEventUpdate(request.params.eventId, "pulse-updated", { pulse });
+  if (pulse.pendingVisionCount) scheduleEventVision(request.params.eventId);
   response.json({ pulse });
 });
 

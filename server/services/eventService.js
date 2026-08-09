@@ -57,6 +57,9 @@ export function serializeMemory(memory, capsuleCode = null) {
     analysis: memory.analysis,
     analysisVersion: memory.analysisVersion,
     analyzedAt: memory.analyzedAt,
+    visionStatus: memory.visionStatus || "skipped",
+    visionAnalysisVersion: memory.visionAnalysisVersion,
+    visionAnalyzedAt: memory.visionAnalyzedAt,
     createdAt: memory.createdAt,
     updatedAt: memory.updatedAt,
   };

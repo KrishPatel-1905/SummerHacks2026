@@ -13,6 +13,8 @@ let disconnectFromDatabase;
 let Event;
 let Memory;
 let analyzePendingMemories;
+let processMemoryVision;
+let imageStorage;
 
 const jsonRequest = (body) => ({
   method: "POST",
@@ -32,17 +34,21 @@ before(async () => {
   process.env.UPLOAD_DIR = uploadDirectory;
   process.env.UPLOAD_STORAGE = "local";
 
-  const [{ createApp }, dbModule, eventModule, memoryModule, analysisModule] = await Promise.all([
+  const [{ createApp }, dbModule, eventModule, memoryModule, analysisModule, visionModule, storageModule] = await Promise.all([
     import("../app.js"),
     import("../config/db.js"),
     import("../models/Event.js"),
     import("../models/Memory.js"),
     import("../services/analysisService.js"),
+    import("../services/visionProcessor.js"),
+    import("../storage/index.js"),
   ]);
   disconnectFromDatabase = dbModule.disconnectFromDatabase;
   Event = eventModule.Event;
   Memory = memoryModule.Memory;
   analyzePendingMemories = analysisModule.analyzePendingMemories;
+  processMemoryVision = visionModule.processMemoryVision;
+  imageStorage = storageModule.imageStorage;
   server = createApp().listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
@@ -198,6 +204,43 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   const randomMemory = await (await fetch(`${origin}/api/events/${event.id}/memories/random`, capsuleRequest(event))).json();
   assert.equal(randomMemory.memory.id, memory.id);
 
+  await Memory.updateOne({ _id: memory.id }, { $set: { visionStatus: "pending", visionAttempts: 0, nextVisionAttemptAt: null } });
+  const processedVision = await processMemoryVision(memory.id, {
+    storage: imageStorage,
+    analyzer: async ({ image, drawing }) => {
+      assert.ok(image?.buffer.length);
+      assert.ok(drawing?.buffer.length);
+      return {
+        status: "complete",
+        model: "test-gemini",
+        analysis: {
+          photoSignals: [{ label: "laptop", confidence: 0.95 }],
+          drawingSignals: [{ label: "star", confidence: 0.9 }],
+          visualThemes: [{ label: "teamwork", confidence: 0.88 }],
+        },
+      };
+    },
+  });
+  assert.equal(processedVision.visionStatus, "complete");
+  assert.equal(await processMemoryVision(memory.id, { storage: imageStorage, analyzer: async () => assert.fail("completed work must not be claimed twice") }), null);
+  const sourceMemory = await Memory.findById(memory.id);
+  const retryMemory = await Memory.create({
+    eventId: event.id,
+    imageUrl: sourceMemory.imageUrl,
+    message: "temporary vision failure",
+    emoji: "🙂",
+    analysisStatus: "complete",
+    analysis: { mood: "happy", themes: ["shared moments"], visualTags: ["photo"], confidence: 1 },
+    visionStatus: "pending",
+  });
+  await processMemoryVision(retryMemory._id, { storage: imageStorage, analyzer: async () => { throw new Error("temporary Gemini outage"); } });
+  const retryState = await Memory.findById(retryMemory._id).select("+visionAttempts +visionError +nextVisionAttemptAt");
+  assert.equal(retryState.visionStatus, "pending");
+  assert.equal(retryState.visionAttempts, 1);
+  assert.match(retryState.visionError, /temporary Gemini outage/);
+  assert.ok(retryState.nextVisionAttemptAt > new Date());
+  await retryMemory.deleteOne();
+
   const initialPulse = await (await fetch(`${origin}/api/events/${event.id}/pulse`, capsuleRequest(event))).json();
   assert.equal(initialPulse.pulse.memoryCount, 1);
   assert.equal(initialPulse.pulse.analyzedMemoryCount, 1);
@@ -235,15 +278,42 @@ test("event and memory data persist and power invite, viewer, QR, and pulse APIs
   });
   await Event.updateOne({ _id: event.id }, { $inc: { memoryCount: 1 } });
   await analyzePendingMemories(event.id);
+  await Memory.updateOne({ _id: pendingMemory._id }, {
+    $set: {
+      imageUrl: "/uploads/legacy-photo.png",
+      envelopeDrawing: "/uploads/legacy-drawing.png",
+      visionStatus: "complete",
+      visionAnalysis: {
+        photoSignals: [{ label: "laptop", confidence: 0.91 }],
+        drawingSignals: [{ label: "star", confidence: 0.94 }],
+        visualThemes: [{ label: "teamwork", confidence: 0.9 }],
+      },
+      visionAnalysisVersion: "gemini-vision-v1",
+      visionModel: "test-gemini",
+      visionAnalyzedAt: new Date(),
+    },
+  });
   const backfilledPulse = await (await fetch(`${origin}/api/events/${event.id}/pulse`, capsuleRequest(event))).json();
   assert.equal(backfilledPulse.pulse.pendingAnalysisCount, 0);
   assert.equal((await Memory.findById(pendingMemory._id)).analysisStatus, "complete");
+  assert.equal(backfilledPulse.pulse.visionCoverage, 100);
+  assert.deepEqual(backfilledPulse.pulse.visualSignals.find(({ label }) => label === "laptop"), {
+    label: "laptop", count: 2, photoCount: 2, drawingCount: 0, sources: ["photo"],
+  });
+  assert.deepEqual(backfilledPulse.pulse.visualSignals.find(({ label }) => label === "star"), {
+    label: "star", count: 2, photoCount: 0, drawingCount: 2, sources: ["drawing"],
+  });
+  assert.equal(backfilledPulse.pulse.themes[0].label, "teamwork");
+  assert.match(backfilledPulse.pulse.story, /laptop kept appearing/i);
 
   const { GridFsStorage } = await import("../storage/gridFsStorage.js");
   const gridStorage = new GridFsStorage("testUploads");
   const gridUrl = await gridStorage.save({ buffer: png, mimetype: "image/png" }, "test");
   const gridFilename = path.basename(gridUrl);
   assert.ok(await Memory.db.db.collection("testUploads.files").findOne({ filename: gridFilename }));
+  const gridFile = await gridStorage.read(gridUrl);
+  assert.deepEqual(gridFile.buffer, png);
+  assert.equal(gridFile.mimetype, "image/png");
   await gridStorage.remove(gridUrl);
   assert.equal(await Memory.db.db.collection("testUploads.files").findOne({ filename: gridFilename }), null);
 

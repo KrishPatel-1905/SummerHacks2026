@@ -23,6 +23,8 @@ PUBLIC_APP_URL=http://localhost:3000
 NODE_ENV=development
 TRUST_PROXY=false
 ANALYSIS_INTERVAL_MS=15000
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.6-flash
 UPLOAD_STORAGE=gridfs
 UPLOAD_DIR=./uploads
 ```
@@ -38,6 +40,20 @@ Accepted memory photos are JPEG, PNG, WebP, or GIF up to 8 MB. Envelope drawings
 ## Event Pulse analysis
 
 New memories are analyzed automatically from the participant-selected mood, message keywords, and attached-media metadata. Results are persisted with each memory and aggregated by the read-only pulse endpoint into mood, theme, visual-tag, hourly activity, coverage, and story data. A background worker backfills older pending memories. The deterministic analyzer is the extension point for a future vision or language-model worker.
+
+When `GEMINI_API_KEY` is configured, photos and envelope drawings are analyzed asynchronously with Gemini. Submissions still complete immediately using deterministic mood and keyword analysis. Event Pulse adds ranked visual signals with photo/drawing provenance, vision coverage, combined themes, and repeated visual motifs in the event story. Missing or failed Gemini analysis never deletes or blocks a memory.
+
+Preview a production backfill without changing data:
+
+```bash
+npm run backfill:vision
+```
+
+After reviewing the counts, process all eligible stored uploads with concurrency two:
+
+```bash
+npm run backfill:vision -- --apply
+```
 
 ## Health checks
 

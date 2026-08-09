@@ -7,6 +7,17 @@ const analysisSchema = new mongoose.Schema({
   confidence: { type: Number, min: 0, max: 1 },
 }, { _id: false });
 
+const visionSignalSchema = new mongoose.Schema({
+  label: { type: String, trim: true, maxlength: 40 },
+  confidence: { type: Number, min: 0, max: 1 },
+}, { _id: false });
+
+const visionAnalysisSchema = new mongoose.Schema({
+  photoSignals: { type: [visionSignalSchema], default: [] },
+  drawingSignals: { type: [visionSignalSchema], default: [] },
+  visualThemes: { type: [visionSignalSchema], default: [] },
+}, { _id: false });
+
 const storedUrlPattern = /^(https?:\/\/[^\s]+|\/uploads\/[a-zA-Z0-9._-]+)$/;
 
 const memorySchema = new mongoose.Schema({
@@ -92,12 +103,31 @@ const memorySchema = new mongoose.Schema({
     default: null,
     maxlength: 500,
   },
+  visionStatus: {
+    type: String,
+    enum: ["pending", "processing", "complete", "failed", "skipped"],
+    default: "skipped",
+    index: true,
+  },
+  visionAnalysis: {
+    type: visionAnalysisSchema,
+    default: null,
+    select: false,
+  },
+  visionAnalysisVersion: { type: String, default: null, maxlength: 80 },
+  visionModel: { type: String, default: null, maxlength: 80 },
+  visionAnalyzedAt: { type: Date, default: null },
+  visionStartedAt: { type: Date, default: null, select: false },
+  visionAttempts: { type: Number, default: 0, min: 0, max: 10, select: false },
+  visionError: { type: String, default: null, maxlength: 500, select: false },
+  nextVisionAttemptAt: { type: Date, default: null, select: false },
 }, {
   timestamps: true,
   versionKey: false,
 });
 
 memorySchema.index({ eventId: 1, createdAt: 1 });
+memorySchema.index({ eventId: 1, visionStatus: 1, nextVisionAttemptAt: 1 });
 memorySchema.index(
   { eventId: 1, clientRequestId: 1 },
   { unique: true, partialFilterExpression: { clientRequestId: { $type: "string" } } },

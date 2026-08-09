@@ -1,4 +1,4 @@
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -8,6 +8,7 @@ const EXTENSIONS = new Map([
   ["image/webp", ".webp"],
   ["image/gif", ".gif"],
 ]);
+const MIME_TYPES = new Map([...EXTENSIONS].map(([mimeType, extension]) => [extension, mimeType]));
 
 export class LocalFileStorage {
   constructor(directory) {
@@ -28,6 +29,17 @@ export class LocalFileStorage {
     if (!url?.startsWith("/uploads/")) return;
     const filename = path.basename(url);
     await unlink(path.join(this.directory, filename)).catch(() => {});
+  }
+
+  async read(url) {
+    if (!url?.startsWith("/uploads/")) return null;
+    const filename = path.basename(url);
+    try {
+      return { buffer: await readFile(path.join(this.directory, filename)), mimetype: MIME_TYPES.get(path.extname(filename).toLowerCase()) || "application/octet-stream" };
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
   }
 
   async send(filename, response, next) {

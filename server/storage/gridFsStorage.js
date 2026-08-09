@@ -41,6 +41,21 @@ export class GridFsStorage {
     if (file) await this.bucket().delete(file._id);
   }
 
+  async read(url) {
+    if (!url?.startsWith("/uploads/")) return null;
+    const filename = path.basename(url);
+    const file = await this.bucket().find({ filename }).sort({ uploadDate: -1 }).limit(1).next();
+    if (!file) return null;
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      const stream = this.bucket().openDownloadStream(file._id);
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.once("error", reject);
+      stream.once("end", resolve);
+    });
+    return { buffer: Buffer.concat(chunks), mimetype: file.metadata?.contentType || "application/octet-stream" };
+  }
+
   async send(filename, response, next) {
     try {
       const file = await this.bucket().find({ filename }).sort({ uploadDate: -1 }).limit(1).next();

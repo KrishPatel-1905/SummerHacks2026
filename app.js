@@ -752,6 +752,7 @@ function AddMemoryModal() {
         ${PostcardPreview()}
       </section>
     </div>
+    <p class="analysis-disclosure">✦ Your photo and envelope drawing are analyzed to create anonymous, aggregate Event Pulse trends.</p>
     <p class="form-error memory-error" id="memory-error" aria-live="polite"></p>
     ${HandDrawnButton("NEXT", { tone: "blue", icon: "→", className: "add-next", action: 'data-next="draw"' })}
   </div>`;
@@ -903,7 +904,8 @@ function MoodRows() {
 function EventPulseScreen() {
   const pulse = appState.pulse || { memoryCount: appState.memoryCount, moods: [], themes: [], visualTags: [], timeline: [], peak: null, analyzedMemoryCount: 0, pendingAnalysisCount: 0, analysisCoverage: 0, story: "" };
   const themes = pulse.themes.length ? pulse.themes.slice(0, 6) : [{ label: "analysis pending" }];
-  const objects = pulse.visualTags.length ? pulse.visualTags.slice(0, 4) : [{ label: "pending", empty: true }];
+  const objects = (pulse.visualSignals?.length ? pulse.visualSignals : pulse.visualTags || []).slice(0, 8);
+  if (!objects.length) objects.push({ label: "pending", empty: true, count: 0, sources: [] });
   const peakLabel = pulse.peak ? new Date(pulse.peak.bucket).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "waiting...";
   const story = pulse.story || "The capsule is waiting for its first memory.";
   return `<main id="pulse-screen" class="screen pulse-screen ${appState.screen === "pulse" ? "is-active" : ""}" data-screen="pulse">
@@ -913,13 +915,18 @@ function EventPulseScreen() {
         ${HandwrittenHeading("EVENT PULSE", { level: 1, className: "pulse-title", note: "what did today feel like?" })}
         <div class="memory-total"><strong>${pulse.memoryCount}</strong> Memories</div>
         <p class="pulse-coverage">${pulse.analysisCoverage}% analyzed${pulse.pendingAnalysisCount ? ` · ${pulse.pendingAnalysisCount} pending` : ""}</p>
+        <p class="pulse-vision-coverage">◉ ${pulse.visionCoverage ?? 0}% visually analyzed${pulse.pendingVisionCount ? ` · ${pulse.pendingVisionCount} pending` : ""}${pulse.failedVisionCount ? ` · ${pulse.failedVisionCount} unavailable` : ""}</p>
         <h2 class="scribble-subhead">How the room felt</h2>${MoodRows()}
         <h2 class="scribble-subhead">What everyone talked about</h2>
         <div class="theme-cloud">${themes.map((theme, index) => `<span class="theme theme--${PULSE_COLORS[index % PULSE_COLORS.length]}">${esc(theme.label.toUpperCase())}</span>`).join("")}</div>
       </div>
       <div class="notebook-page notebook-page--right">
         <h2 class="scribble-subhead">What kept showing up</h2>
-        <div class="pulse-objects">${objects.map((obj) => `<div><span>${obj.empty ? "✦" : "◉"}</span><p>${esc(obj.label)}</p></div>`).join("")}</div>
+        <div class="pulse-objects">${objects.map((obj) => {
+          const sources = obj.sources || [];
+          const source = sources.length > 1 ? "BOTH" : sources[0]?.toUpperCase() || "PENDING";
+          return `<div class="pulse-object"><span>${obj.empty ? "✦" : "◉"}</span><p>${esc(obj.label)}</p><small>${obj.empty ? "waiting for analysis" : `${obj.count} ${obj.count === 1 ? "memory" : "memories"} · ${source}`}</small></div>`;
+        }).join("")}</div>
         <div class="timeline-head"><h2 class="scribble-subhead">Memories through the day</h2><p>Peak moment:<br><strong>${esc(peakLabel)}</strong></p></div>
         <canvas id="pulse-chart" aria-label="Memories through the day line chart"></canvas>
         <article class="story-card">${Tape("tan", "story-tape")}<h2>☆ The Story of the Day</h2><p>${esc(story)}</p><span>♡</span></article>
@@ -1395,7 +1402,8 @@ function connectEventStream() {
       appState.event = { ...appState.event, memoryCount: update.data.memoryCount };
       rememberParticipatedCapsule(appState.event, participatedCapsuleById(appState.event.id)?.participation, { lastActivityAt: update.data.memory.createdAt || new Date().toISOString() });
       appState.pulse = null;
-      refreshLiveEventUi();
+      if (appState.screen === "pulse") await showPulse();
+      else refreshLiveEventUi();
     }
     if (update.type === "memory-removed") {
       appState.memories = appState.memories.filter((memory) => memory.id !== update.data.memoryId);
