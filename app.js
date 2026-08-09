@@ -18,8 +18,12 @@ const appState = {
   mood: draftMemory.mood,
   author: draftMemory.author || "",
   photo: null,
+  drawing: null,
   memoryIndex: 0,
-  submitted: false,
+  memoryViewerPhase: "sealed",
+  memoryViewerTimer: null,
+  hasPickedMemory: false,
+  isSubmitting: false,
 };
 
 const app = document.querySelector("#app");
@@ -111,7 +115,10 @@ function Polaroid(item, index, location = "landing") {
 function Envelope(item, index = 0, extra = "") {
   const stamps = ["☆", "♄", "➶", "☾", "✿"];
   const postal = ["≋", "⌁", "///", "···"];
-  return `<div class="envelope envelope--${item.color} ${extra}" style="--envelope-tilt:${(index % 5 - 2) * 3}deg">
+  const hasDrawing = Boolean(item.drawing);
+  const drawingMarkup = hasDrawing ? `
+    <img class="envelope-base-art" src="./assets/leave-your-mark-envelope.png" alt="" draggable="false" />
+    <img class="envelope-drawing" src="${esc(item.drawing)}" alt="" draggable="false" />` : `
     <div class="envelope-flap"></div>
     <span class="envelope-sketch envelope-sketch--a">//</span><span class="envelope-sketch envelope-sketch--b">⌁</span>
     ${index % 3 === 0 ? Tape(index % 2 ? "tan" : "blue", "envelope-tape") : ""}
@@ -119,7 +126,8 @@ function Envelope(item, index = 0, extra = "") {
     <span class="envelope-postal">${postal[index % postal.length]}</span>
     <span class="envelope-mark">${esc(item.mark || "")}</span>
     <span class="envelope-doodle">${esc(item.doodle || "✦")}</span>
-    <span class="envelope-seal envelope-seal--${item.seal || "planet"}">${item.seal === "heart" ? "♡" : item.seal === "smile" ? "☺" : item.seal === "star" ? "★" : "♄"}</span>
+    <span class="envelope-seal envelope-seal--${item.seal || "planet"}">${item.seal === "heart" ? "♡" : item.seal === "smile" ? "☺" : item.seal === "star" ? "★" : "♄"}</span>`;
+  return `<div class="envelope envelope--${item.color} ${hasDrawing ? "envelope--with-drawing" : ""} ${extra}" style="--envelope-tilt:${(index % 5 - 2) * 3}deg" ${hasDrawing ? 'role="img" aria-label="Your drawing inside the event capsule"' : ""}>${drawingMarkup}
   </div>`;
 }
 
@@ -179,11 +187,12 @@ function LandingScreen() {
 }
 
 function EventScreen() {
+  const capsuleFull = appState.memoryCount >= event.memoryLimit;
   return `<main id="event-screen" class="screen event-screen" data-screen="event">
     <header class="event-header">
       <div>
         ${HandwrittenHeading(event.title, { level: 1, className: "event-title" })}
-        <p class="memory-count"><span id="memory-count">${appState.memoryCount}</span> memories so far!</p>
+        <p class="memory-count"><span data-memory-total>${appState.memoryCount}</span> memories so far!</p>
       </div>
       ${HandDrawnButton("SHARE ↗", { tone: "paper", className: "share-button", action: 'data-open="invite"' })}
     </header>
@@ -192,7 +201,7 @@ function EventScreen() {
       ${Mascot("star", "Smiling star mascot")}
     </section>
     <section class="event-actions" aria-label="Event actions">
-      ${HandDrawnButton("ADD YOUR MEMORY", { tone: "coral", icon: "+", action: 'data-open="add"' })}
+      ${HandDrawnButton(capsuleFull ? "CAPSULE FULL" : "ADD YOUR MEMORY", { tone: "coral", icon: "+", action: `${capsuleFull ? 'disabled aria-disabled="true"' : 'data-open="add"'} data-add-memory` })}
       ${HandDrawnButton("PICK A MEMORY", { tone: "yellow", icon: "✦", action: 'data-open="viewer"' })}
       <button class="text-link" data-nav="pulse">EVENT PULSE <span>→</span></button>
     </section>
@@ -293,8 +302,8 @@ function DrawModal() {
       </aside>
       <section class="drawing-stage">${EnvelopeCustomizer()}${DrawingToolbar()}</section>
       <aside class="send-panel">
-        ${HandDrawnButton("SEND TO CAPSULE", { tone: "coral", icon: "➶", action: 'data-send="true"' })}
-        <button class="skip-button" data-send="true">SKIP</button>
+        ${HandDrawnButton("SEND TO CAPSULE", { tone: "coral", icon: "➶", action: 'data-send="drawing"' })}
+        <button class="skip-button" data-send="skip">SKIP</button>
       </aside>
     </div>
   </div>`;
@@ -302,7 +311,7 @@ function DrawModal() {
 }
 
 function MemoryPostcard(memory) {
-  return `<article class="memory-postcard">
+  return `<article class="memory-postcard" tabindex="-1" aria-label="Postcard from ${esc(memory.author || "Anonymous")}">
     <div class="memory-photo-frame">${Tape("blue", "memory-photo-tape")}${memory.photo ? `<img class="memory-user-photo" src="${esc(memory.photo)}" alt="Memory shared by ${esc(memory.author || "Anonymous")}" />` : PhotoScene(memory.scene)}</div>
     <div class="memory-copy">
       <span class="mood-sticker">${memory.mood}</span>
@@ -315,16 +324,48 @@ function MemoryPostcard(memory) {
   </article>`;
 }
 
+function SealedMemoryEnvelope(memory) {
+  const art = memory.envelopeArt || {
+    ink: "#2357d8",
+    phrase: "A LITTLE MEMORY",
+    symbol: "✦",
+    trail: "⌁  ·  ☆",
+  };
+  const drawing = memory.drawing
+    ? `<img class="viewer-drawing-image" src="${esc(memory.drawing)}" alt="Drawing by ${esc(memory.author || "Anonymous")}" />`
+    : `<span class="viewer-drawing-symbol">${esc(art.symbol)}</span>
+      <span class="viewer-drawing-phrase">${esc(art.phrase)}</span>
+      <span class="viewer-drawing-trail">${esc(art.trail)}</span>
+      <span class="viewer-drawing-orbit"></span>`;
+
+  return `<button class="sealed-memory-envelope envelope--${memory.envelopeColor || "cream"}" data-rip-memory style="--drawing-ink:${esc(art.ink || "#2357d8")}" aria-describedby="memory-viewer-hint" aria-label="Rip open ${esc(memory.author || "this guest")}'s envelope">
+    <span class="sealed-envelope-shadow" aria-hidden="true"></span>
+    <img class="sealed-envelope-art" src="./assets/leave-your-mark-envelope.png" alt="" draggable="false" />
+    <span class="viewer-envelope-drawing">${drawing}</span>
+    <span class="envelope-from">FROM ${esc((memory.author || "ANONYMOUS").toUpperCase())}</span>
+    <span class="rip-strip" aria-hidden="true"><i></i><b>RIP HERE</b><em>→</em></span>
+    <span class="tear-scrap tear-scrap--one" aria-hidden="true"></span>
+    <span class="tear-scrap tear-scrap--two" aria-hidden="true"></span>
+  </button>`;
+}
+
+function OpenedMemoryEnvelope(memory) {
+  return `<div class="revealed-memory-postcard">${MemoryPostcard(memory)}</div>`;
+}
+
 function MemoryViewer() {
   const memory = mockMemories[appState.memoryIndex];
   return `<section class="modal-layer memory-layer" data-modal="viewer" aria-hidden="true">
     <div class="modal-scrim" data-close="viewer"></div>
     <button class="close-button viewer-close" data-close="viewer" aria-label="Close memory viewer">×</button>
-    ${HandDrawnButton("PREVIOUS", { tone: "paper", icon: "←", className: "memory-nav memory-nav--prev", action: 'data-memory-nav="-1"' })}
-    <div class="memory-envelope-stage">
-      <div class="open-envelope"><div class="open-envelope-back"></div><div class="memory-card-slot" id="memory-card-slot">${MemoryPostcard(memory)}</div><div class="open-envelope-front"></div><span class="open-seal">♄</span></div>
+    ${HandDrawnButton("PREV ENVELOPE", { tone: "paper", icon: "←", className: "memory-nav memory-nav--prev", action: 'data-memory-nav="-1"' })}
+    <div class="memory-viewer-center">
+      <div class="memory-viewer-heading" aria-hidden="true"><span>✦</span><strong>A MEMORY FOUND YOU</strong><span>✦</span></div>
+      <div class="memory-envelope-stage" id="memory-envelope-stage">${SealedMemoryEnvelope(memory)}</div>
+      <p class="memory-viewer-hint" id="memory-viewer-hint">Click the envelope to rip it open <span>↗</span></p>
+      <p class="memory-viewer-count" id="memory-viewer-count">ENVELOPE ${appState.memoryIndex + 1} / ${mockMemories.length}</p>
     </div>
-    ${HandDrawnButton("NEXT", { tone: "paper", icon: "→", className: "memory-nav memory-nav--next", action: 'data-memory-nav="1"' })}
+    ${HandDrawnButton("NEXT ENVELOPE", { tone: "paper", icon: "→", className: "memory-nav memory-nav--next", action: 'data-memory-nav="1"' })}
   </section>`;
 }
 
@@ -358,7 +399,7 @@ function EventPulseScreen() {
       ${Tape("tan", "notebook-tape notebook-tape--left")}${Tape("tan", "notebook-tape notebook-tape--right")}
       <div class="notebook-page notebook-page--left">
         ${HandwrittenHeading("EVENT PULSE", { level: 1, className: "pulse-title", note: "what did today feel like?" })}
-        <div class="memory-total"><strong>${mockPulseData.memoryCount}</strong> Memories</div>
+        <div class="memory-total"><strong data-memory-total>${appState.memoryCount}</strong> Memories</div>
         <h2 class="scribble-subhead">How the room felt</h2>${MoodRows()}
         <h2 class="scribble-subhead">What everyone talked about</h2>
         <div class="theme-cloud">${mockPulseData.themes.map((theme) => `<span class="theme theme--${theme.color}">${theme.label}</span>`).join("")}</div>
@@ -388,17 +429,26 @@ function showScreen(name) {
 }
 
 function openModal(name) {
+  if (name === "add" && appState.memoryCount >= event.memoryLimit) {
+    showToast(`This capsule is full at ${event.memoryLimit} memories.`);
+    return;
+  }
   appState.modal = name;
   const modal = document.querySelector(`[data-modal="${name}"]`);
   if (!modal) return;
+  if (name === "viewer") prepareMemoryViewer(true);
   modal.classList.add("is-open"); modal.setAttribute("aria-hidden", "false"); document.body.classList.add("modal-open");
   if (name === "draw") requestAnimationFrame(setupDrawingCanvas);
-  modal.querySelector("button, input, textarea")?.focus({ preventScroll: true });
+  modal.querySelector(name === "viewer" ? "[data-rip-memory]" : "button, input, textarea")?.focus({ preventScroll: true });
 }
 
 function closeModal(name) {
   const modal = document.querySelector(`[data-modal="${name}"]`);
   if (!modal) return;
+  if (name === "viewer") {
+    clearTimeout(appState.memoryViewerTimer);
+    appState.memoryViewerPhase = "sealed";
+  }
   modal.classList.remove("is-open"); modal.setAttribute("aria-hidden", "true");
   appState.modal = null; document.body.classList.remove("modal-open");
 }
@@ -406,6 +456,19 @@ function closeModal(name) {
 function showToast(message) {
   toastEl.textContent = message; toastEl.classList.add("is-visible");
   clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toastEl.classList.remove("is-visible"), 2400);
+}
+
+function updateMemoryTotals() {
+  document.querySelectorAll("[data-memory-total]").forEach((node) => { node.textContent = appState.memoryCount; });
+  const addButton = document.querySelector("[data-add-memory]");
+  if (!addButton) return;
+  const capsuleFull = appState.memoryCount >= event.memoryLimit;
+  addButton.disabled = capsuleFull;
+  addButton.setAttribute("aria-disabled", capsuleFull ? "true" : "false");
+  if (capsuleFull) addButton.removeAttribute("data-open");
+  else addButton.setAttribute("data-open", "add");
+  const label = addButton.querySelector("span:last-child");
+  if (label) label.textContent = capsuleFull ? "CAPSULE FULL" : "ADD YOUR MEMORY";
 }
 
 function updatePreviews() {
@@ -419,13 +482,74 @@ function updatePreviews() {
   if (appState.photo) document.querySelectorAll(".js-user-photo").forEach((node) => { node.innerHTML = `<img src="${appState.photo}" alt="Selected memory preview" />`; });
 }
 
+function randomMemoryIndex() {
+  if (mockMemories.length < 2 || !appState.hasPickedMemory) return Math.floor(Math.random() * mockMemories.length);
+  const offset = 1 + Math.floor(Math.random() * (mockMemories.length - 1));
+  return (appState.memoryIndex + offset) % mockMemories.length;
+}
+
+function updateMemoryViewerDetails(message = "Click the envelope to rip it open") {
+  const hint = document.querySelector("#memory-viewer-hint");
+  const count = document.querySelector("#memory-viewer-count");
+  if (hint) hint.innerHTML = `${esc(message)} <span aria-hidden="true">↗</span>`;
+  if (count) count.textContent = `ENVELOPE ${appState.memoryIndex + 1} / ${mockMemories.length}`;
+}
+
+function prepareMemoryViewer(pickRandom = false) {
+  if (!mockMemories.length) return;
+  clearTimeout(appState.memoryViewerTimer);
+  if (pickRandom) appState.memoryIndex = randomMemoryIndex();
+  appState.hasPickedMemory = true;
+  appState.memoryViewerPhase = "sealed";
+  const stage = document.querySelector("#memory-envelope-stage");
+  if (stage) {
+    stage.className = "memory-envelope-stage is-arriving";
+    stage.innerHTML = SealedMemoryEnvelope(mockMemories[appState.memoryIndex]);
+    requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.remove("is-arriving")));
+  }
+  updateMemoryViewerDetails();
+  document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = false; });
+}
+
 function refreshMemoryCard(direction = 1) {
-  appState.memoryIndex = (appState.memoryIndex + direction + mockMemories.length) % mockMemories.length;
-  const slot = document.querySelector("#memory-card-slot");
-  if (!slot) return;
-  slot.classList.add(direction > 0 ? "slide-next" : "slide-prev");
-  setTimeout(() => { slot.innerHTML = MemoryPostcard(mockMemories[appState.memoryIndex]); slot.className = "memory-card-slot slide-in"; }, 170);
-  setTimeout(() => { slot.className = "memory-card-slot"; }, 520);
+  if (appState.memoryViewerPhase === "ripping" || mockMemories.length < 2) return;
+  appState.memoryViewerPhase = "cycling";
+  const stage = document.querySelector("#memory-envelope-stage");
+  if (!stage) return;
+  document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = true; });
+  stage.classList.add(direction > 0 ? "is-cycling-next" : "is-cycling-prev");
+  appState.memoryViewerTimer = setTimeout(() => {
+    appState.memoryIndex = (appState.memoryIndex + direction + mockMemories.length) % mockMemories.length;
+    appState.memoryViewerPhase = "sealed";
+    stage.className = `memory-envelope-stage ${direction > 0 ? "is-entering-next" : "is-entering-prev"}`;
+    stage.innerHTML = SealedMemoryEnvelope(mockMemories[appState.memoryIndex]);
+    updateMemoryViewerDetails();
+    requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.remove("is-entering-next", "is-entering-prev")));
+    setTimeout(() => document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = false; }), 260);
+  }, 210);
+}
+
+function ripMemoryEnvelope() {
+  if (appState.memoryViewerPhase !== "sealed") return;
+  const stage = document.querySelector("#memory-envelope-stage");
+  const envelope = stage?.querySelector("[data-rip-memory]");
+  if (!stage || !envelope) return;
+  appState.memoryViewerPhase = "ripping";
+  envelope.disabled = true;
+  envelope.classList.add("is-ripping");
+  document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = true; });
+  updateMemoryViewerDetails("Rrrrip!");
+  appState.memoryViewerTimer = setTimeout(() => {
+    appState.memoryViewerPhase = "open";
+    stage.classList.add("is-opening");
+    stage.innerHTML = OpenedMemoryEnvelope(mockMemories[appState.memoryIndex]);
+    updateMemoryViewerDetails("Postcard revealed — choose another envelope to keep exploring");
+    document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = false; });
+    setTimeout(() => {
+      stage.classList.remove("is-opening");
+      stage.querySelector(".memory-postcard")?.focus({ preventScroll: true });
+    }, 480);
+  }, 760);
 }
 
 async function copyValue(kind) {
@@ -434,16 +558,28 @@ async function copyValue(kind) {
   catch { showToast(`Copy this: ${value}`); }
 }
 
-function submitMemory() {
+function submitMemory(includeDrawing = true) {
+  if (appState.isSubmitting) return;
+  if (appState.memoryCount >= event.memoryLimit) {
+    closeModal("draw");
+    updateMemoryTotals();
+    showToast(`This capsule is full at ${event.memoryLimit} memories.`);
+    return;
+  }
   const drawLayer = document.querySelector('[data-modal="draw"]');
   const source = drawLayer?.querySelector(".custom-envelope");
   if (!source) return;
+  appState.isSubmitting = true;
+  drawLayer.querySelectorAll("[data-send]").forEach((button) => { button.disabled = true; });
+  const drawing = includeDrawing ? drawController?.exportDrawing() || null : null;
+  appState.drawing = drawing;
   source.classList.add("is-sealing");
   const from = source.getBoundingClientRect();
   setTimeout(() => {
     closeModal("draw"); showScreen("event");
     const target = document.querySelector("#event-screen .capsule-window")?.getBoundingClientRect();
-    const flyer = document.createElement("div"); flyer.className = "flying-envelope"; flyer.innerHTML = `<span>♄</span>`;
+    const flyer = document.createElement("div"); flyer.className = "flying-envelope";
+    flyer.innerHTML = drawing ? `<img class="flying-envelope-drawing" src="${esc(drawing)}" alt="" /><span>♄</span>` : `<span>♄</span>`;
     flyer.style.left = `${from.left + from.width * .25}px`; flyer.style.top = `${from.top + from.height * .25}px`; document.body.appendChild(flyer);
     requestAnimationFrame(() => {
       const x = target ? target.left + target.width / 2 - (from.left + from.width * .25) : window.innerWidth / 2;
@@ -459,29 +595,37 @@ function submitMemory() {
         const stack = document.querySelector("#event-screen .envelope-stack");
         if (stack) {
           stack.classList.add("is-shifting");
-          if (!stack.querySelector(".just-added")) stack.insertAdjacentHTML("beforeend", Envelope({ color: "coral", mark: "YOU", doodle: "✦", seal: "planet" }, stack.children.length, "just-added"));
-          setTimeout(() => stack.classList.remove("is-shifting"), 620);
+          const envelope = drawing
+            ? { color: "cream", drawing }
+            : { color: "coral", mark: "YOU", doodle: "✦", seal: "planet" };
+          stack.querySelector(".just-added")?.classList.remove("just-added");
+          stack.insertAdjacentHTML("beforeend", Envelope(envelope, stack.children.length, "just-added"));
+          const addedEnvelope = stack.lastElementChild;
+          setTimeout(() => {
+            stack.classList.remove("is-shifting");
+            addedEnvelope?.classList.remove("just-added");
+          }, 620);
         }
-        if (!appState.submitted) {
-          const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date()).toUpperCase();
-          mockMemories.unshift({
-            id: `memory-${Date.now()}`,
-            scene: draftMemory.scene,
-            photo: appState.photo,
-            message: appState.message.trim() || "A memory from today.",
-            author: appState.author.trim() || "Anonymous",
-            mood: appState.mood,
-            date,
-            relativeTime: "added just now",
-            envelopeColor: "coral",
-            stamp: "star",
-          });
-          appState.memoryCount += 1;
-          appState.memoryIndex = 0;
-          appState.submitted = true;
-          document.querySelector("#memory-count").textContent = appState.memoryCount;
-        }
-        showToast("Memory added to the capsule! ✦");
+        const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date()).toUpperCase();
+        mockMemories.unshift({
+          id: `memory-${Date.now()}`,
+          scene: draftMemory.scene,
+          photo: appState.photo,
+          drawing,
+          message: appState.message.trim() || "A memory from today.",
+          author: appState.author.trim() || "Anonymous",
+          mood: appState.mood,
+          date,
+          relativeTime: "added just now",
+          envelopeColor: "coral",
+          stamp: "star",
+        });
+        appState.memoryCount += 1;
+        appState.memoryIndex = 0;
+        appState.isSubmitting = false;
+        drawLayer.querySelectorAll("[data-send]").forEach((button) => { button.disabled = false; });
+        updateMemoryTotals();
+        showToast(appState.memoryCount >= event.memoryLimit ? "Memory added — the capsule is now full! ✦" : "Memory added to the capsule! ✦");
       }, 1220);
     });
     source.classList.remove("is-sealing");
@@ -517,6 +661,13 @@ function setupDrawingCanvas() {
   drawController = {
     setTool(next) { tool = next; }, setColor(next) { color = next; },
     undo() { restore(history.pop()); }, clear() { snapshot(); ctx.clearRect(0, 0, canvas.width, canvas.height); },
+    exportDrawing() {
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (pixels[index] !== 0) return canvas.toDataURL("image/png");
+      }
+      return null;
+    },
   };
   canvas.dataset.ready = "true";
 }
@@ -552,8 +703,9 @@ function bindInteractions() {
     const mood = eventTarget.target.closest("[data-mood]"); if (mood) { appState.mood = mood.dataset.mood; updatePreviews(); }
     const next = eventTarget.target.closest("[data-next]"); if (next) { closeModal("add"); setTimeout(() => openModal("draw"), 80); }
     const memNav = eventTarget.target.closest("[data-memory-nav]"); if (memNav) refreshMemoryCard(Number(memNav.dataset.memoryNav));
+    const ripEnvelope = eventTarget.target.closest("[data-rip-memory]"); if (ripEnvelope) ripMemoryEnvelope();
     const copy = eventTarget.target.closest("[data-copy]"); if (copy) copyValue(copy.dataset.copy);
-    const send = eventTarget.target.closest("[data-send]"); if (send) submitMemory();
+    const send = eventTarget.target.closest("[data-send]"); if (send) submitMemory(send.dataset.send === "drawing");
     const toolButton = eventTarget.target.closest("[data-tool]");
     if (toolButton) {
       const tool = toolButton.dataset.tool;

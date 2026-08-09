@@ -5,6 +5,7 @@ export const event = {
   inviteDisplay: "583 219",
   inviteUrl: "eventcapsule.app/583219",
   memoryCount: 37,
+  memoryLimit: 50,
 };
 
 export const moods = [
@@ -59,6 +60,7 @@ export const mockMemories = [
     date: "AUG 8",
     relativeTime: "added 42 min ago",
     envelopeColor: "cream",
+    envelopeArt: { ink: "#2357d8", phrase: "WE MADE IT!", symbol: "✦", trail: "☆  ⌁  ☆" },
     stamp: "star",
   },
   {
@@ -70,6 +72,7 @@ export const mockMemories = [
     date: "AUG 8",
     relativeTime: "added 1 hr ago",
     envelopeColor: "lavender",
+    envelopeArt: { ink: "#f25a47", phrase: "TINY WINS", symbol: "♡", trail: "·  🍕  ·" },
     stamp: "planet",
   },
   {
@@ -81,6 +84,7 @@ export const mockMemories = [
     date: "AUG 8",
     relativeTime: "added 2 hrs ago",
     envelopeColor: "mint",
+    envelopeArt: { ink: "#674bb0", phrase: "OUR TEAM", symbol: "☻", trail: "♡  —  ♡" },
     stamp: "rocket",
   },
   {
@@ -92,6 +96,7 @@ export const mockMemories = [
     date: "AUG 8",
     relativeTime: "added 3 hrs ago",
     envelopeColor: "yellow",
+    envelopeArt: { ink: "#2357d8", phrase: "DEMO!", symbol: "☄", trail: "///  ✦" },
     stamp: "star",
   },
 ];
