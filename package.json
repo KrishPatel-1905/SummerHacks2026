@@ -1,0 +1,26 @@
+{
+  "name": "event-capsule",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A shared, persistent event memory capsule.",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "dev:memory": "node server/devMemory.js",
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "mongoose": "^8.17.1",
+    "multer": "^2.0.2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^10.4.3"
+  }
+}

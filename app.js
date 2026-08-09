@@ -1,11 +1,7 @@
 import {
-  event,
   moods,
-  draftMemory,
   polaroids,
   capsuleEnvelopes,
-  mockMemories,
-  mockPulseData,
 } from "./mockData.js";
 
 const MEMORY_MESSAGE_MAX_LENGTH = 50;
@@ -13,17 +9,29 @@ const MEMORY_MESSAGE_MAX_LENGTH = 50;
 const appState = {
   screen: "landing",
   modal: null,
-  memoryCount: event.memoryCount,
-  message: draftMemory.message.slice(0, MEMORY_MESSAGE_MAX_LENGTH),
-  mood: draftMemory.mood,
-  author: draftMemory.author || "",
-  photo: null,
-  drawing: null,
+  event: null,
+  memories: [],
+  pulse: null,
+  memoryCount: 0,
+  message: "",
+  mood: moods[0].emoji,
+  author: "",
+  photoPreview: null,
+  photoFile: null,
   memoryIndex: 0,
   memoryViewerPhase: "sealed",
   memoryViewerTimer: null,
   hasPickedMemory: false,
-  isSubmitting: false,
+  busy: false,
+  capsuleDraft: {
+    name: "SummerHacks 2026",
+    startDate: "2026-08-08",
+    endDate: "2026-08-09",
+    capacity: 100,
+    accentColor: "blue",
+    sticker: "tech",
+    description: "",
+  },
 };
 
 const app = document.querySelector("#app");
@@ -34,6 +42,96 @@ const esc = (value = "") => String(value)
   .replaceAll("<", "&lt;")
   .replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;");
+
+const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const PULSE_COLORS = ["coral", "lavender", "blue", "mint", "yellow"];
+const CAPSULE_CAPACITIES = [
+  { value: 10, label: "CLOSE CIRCLE" },
+  { value: 25, label: "SMALL EVENT" },
+  { value: 100, label: "BIG EVENT" },
+  { value: 250, label: "FULL CROWD" },
+];
+const CAPSULE_COLORS = {
+  blue: { label: "BLUE", value: "#2357d8" },
+  coral: { label: "CORAL", value: "#f25a47" },
+  yellow: { label: "YELLOW", value: "#f6c542" },
+  purple: { label: "PURPLE", value: "#8c6cc4" },
+  mint: { label: "MINT", value: "#74bea8" },
+};
+const CAPSULE_STICKERS = {
+  star: { label: "Star", mark: "★" },
+  graduation: { label: "Graduation", mark: "⌑" },
+  birthday: { label: "Birthday", mark: "♨" },
+  tech: { label: "Tech / Hackathon", mark: "⌨" },
+  music: { label: "Music", mark: "♫" },
+  travel: { label: "Travel", mark: "✈︎" },
+  love: { label: "Love", mark: "♥" },
+  competition: { label: "Competition", mark: "♛" },
+};
+const MOOD_EMOJIS = {
+  happy: "🙂", emotional: "🥹", relieved: "🥹", sad: "😭", tearful: "😭",
+  overwhelmed: "🤯", tired: "😴", loved: "❤️", determined: "😤", excited: "🥳",
+};
+
+function inviteDisplay(code = "") {
+  return code ? `${code.slice(0, 3)} ${code.slice(3)}` : "";
+}
+
+function inviteUrl() {
+  return appState.event ? `${window.location.origin}/${appState.event.inviteCode}` : window.location.origin;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Something went wrong. Try again.");
+  return payload;
+}
+
+function formatMemoryDate(value) {
+  const date = new Date(value);
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase();
+}
+
+function relativeTime(value) {
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "added just now";
+  if (minutes < 60) return `added ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `added ${hours} hr${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `added ${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function parseCalendarDate(value) {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day, 12);
+}
+
+function formatEventDateRange(startValue, endValue, includeYear = true) {
+  const start = parseCalendarDate(startValue);
+  const end = parseCalendarDate(endValue);
+  if (!start || !end) return "PICK YOUR DATES";
+  const month = (date) => date.toLocaleDateString("en-US", { month: "short" }).toUpperCase();
+  const year = (date) => date.getFullYear();
+  if (startValue === endValue) return `${month(start)} ${start.getDate()}${includeYear ? `, ${year(start)}` : ""}`;
+  if (year(start) !== year(end)) return `${month(start)} ${start.getDate()}, ${year(start)} — ${month(end)} ${end.getDate()}, ${year(end)}`;
+  const ending = `${month(end)} ${end.getDate()}${includeYear ? `, ${year(end)}` : ""}`;
+  return `${month(start)} ${start.getDate()} — ${ending}`;
+}
+
+function memoryEnvelope(memory) {
+  return {
+    color: memory.envelopeColor || "cream",
+    mark: memory.emoji || "",
+    doodle: "✦",
+    seal: "planet",
+    envelopeDrawing: memory.envelopeDrawing,
+  };
+}
 
 function Tape(color = "tan", extra = "") {
   return `<span class="tape tape--${color} ${extra}" aria-hidden="true"></span>`;
@@ -78,8 +176,9 @@ function SpaceBackground() {
   </div>`;
 }
 
-function PhotoScene(scene = "concert", className = "", useUserPhoto = false) {
-  const custom = useUserPhoto && appState.photo ? `<img src="${appState.photo}" alt="Selected memory preview" />` : "";
+function PhotoScene(scene = "concert", className = "", useUserPhoto = false, imageUrl = "") {
+  const selectedPhoto = useUserPhoto ? appState.photoPreview : imageUrl;
+  const custom = selectedPhoto ? `<img src="${esc(selectedPhoto)}" alt="${useUserPhoto ? "Selected memory preview" : "Memory photo"}" />` : "";
   const photoAssets = {
     concert: "./assets/photo-concert.png",
     ferris: "./assets/photo-ferris.png",
@@ -115,10 +214,11 @@ function Polaroid(item, index, location = "landing") {
 function Envelope(item, index = 0, extra = "") {
   const stamps = ["☆", "♄", "➶", "☾", "✿"];
   const postal = ["≋", "⌁", "///", "···"];
-  const hasDrawing = Boolean(item.drawing);
+  const drawingSource = item.envelopeDrawing || item.drawing;
+  const hasDrawing = Boolean(drawingSource);
   const drawingMarkup = hasDrawing ? `
     <img class="envelope-base-art" src="./assets/leave-your-mark-envelope.png" alt="" draggable="false" />
-    <img class="envelope-drawing" src="${esc(item.drawing)}" alt="" draggable="false" />` : `
+    <img class="envelope-drawing" src="${esc(drawingSource)}" alt="" draggable="false" />` : `
     <div class="envelope-flap"></div>
     <span class="envelope-sketch envelope-sketch--a">//</span><span class="envelope-sketch envelope-sketch--b">⌁</span>
     ${index % 3 === 0 ? Tape(index % 2 ? "tan" : "blue", "envelope-tape") : ""}
@@ -127,13 +227,14 @@ function Envelope(item, index = 0, extra = "") {
     <span class="envelope-mark">${esc(item.mark || "")}</span>
     <span class="envelope-doodle">${esc(item.doodle || "✦")}</span>
     <span class="envelope-seal envelope-seal--${item.seal || "planet"}">${item.seal === "heart" ? "♡" : item.seal === "smile" ? "☺" : item.seal === "star" ? "★" : "♄"}</span>`;
-  return `<div class="envelope envelope--${item.color} ${hasDrawing ? "envelope--with-drawing" : ""} ${extra}" style="--envelope-tilt:${(index % 5 - 2) * 3}deg" ${hasDrawing ? 'role="img" aria-label="Your drawing inside the event capsule"' : ""}>${drawingMarkup}
+  return `<div class="envelope envelope--${item.color} ${hasDrawing ? "envelope--with-drawing" : ""} ${extra}" style="--envelope-tilt:${(index % 5 - 2) * 3}deg" ${hasDrawing ? 'role="img" aria-label="A hand-drawn memory envelope inside the event capsule"' : ""}>
+    ${drawingMarkup}
   </div>`;
 }
 
 function CapsuleWindow(items = capsuleEnvelopes) {
   return `<div class="capsule-window capsule-window--art">
-    <div class="envelope-stack" aria-label="A colorful stack of shared memory envelopes">
+    <div class="envelope-stack" aria-label="${items.length ? "Shared memory envelopes" : "An empty capsule waiting for memories"}">
       ${items.map((item, index) => Envelope(item, index)).join("")}
     </div>
     <div class="window-glass"></div>
@@ -142,11 +243,19 @@ function CapsuleWindow(items = capsuleEnvelopes) {
 }
 
 function EventCapsuleMachine(size = "hero") {
-  return `<div class="capsule-machine capsule-machine--${size}" aria-label="Illustrated Event Capsule machine full of memory envelopes">
+  const custom = size === "setup" ? appState.capsuleDraft : size === "event" ? (appState.event || appState.capsuleDraft) : null;
+  const items = size === "setup" ? [] : size === "event" ? appState.memories.slice(-10).map(memoryEnvelope) : capsuleEnvelopes;
+  const accent = CAPSULE_COLORS[custom?.accentColor]?.value || CAPSULE_COLORS.blue.value;
+  const stickerKey = custom?.sticker || "star";
+  const sticker = CAPSULE_STICKERS[stickerKey];
+  const machineName = custom?.name?.trim() || "YOUR EVENT";
+  return `<div class="capsule-machine capsule-machine--${size} ${custom ? "capsule-machine--custom" : ""}" style="--capsule-accent:${accent}" aria-label="Illustrated capsule preview for ${esc(machineName)}">
     <span class="machine-ground-shadow"></span>
     <img class="capsule-art" src="./assets/event-capsule-machine.png" alt="" draggable="false" />
-    ${CapsuleWindow()}
-    <strong class="capsule-art-label">EVENT<br>CAPSULE</strong>
+    ${CapsuleWindow(items)}
+    ${custom ? `<span class="capsule-accent-paint capsule-accent-paint--base"></span><span class="capsule-accent-paint capsule-accent-paint--support"></span><span class="capsule-accent-bolt">✦</span>` : ""}
+    <strong class="capsule-art-label ${machineName.length > 18 ? "is-long" : ""}">${custom ? `<span class="js-setup-name">${esc(machineName)}</span>` : "EVENT<br>CAPSULE"}</strong>
+    ${custom ? `<span class="capsule-event-sticker" data-sticker="${stickerKey}" aria-hidden="true"><span class="sticker-icon">${sticker.mark}</span></span>` : ""}
     <span class="capsule-art-scribble capsule-art-scribble--one">///</span>
     <span class="capsule-art-scribble capsule-art-scribble--two">✦</span>
   </div>`;
@@ -162,7 +271,7 @@ function Mascot(type, label) {
 }
 
 function LandingScreen() {
-  return `<main id="landing-screen" class="screen landing-screen is-active" data-screen="landing">
+  return `<main id="landing-screen" class="screen landing-screen ${appState.screen === "landing" ? "is-active" : ""}" data-screen="landing">
     <div class="landing-polaroids landing-polaroids--left">${polaroids.slice(0, 3).map((p, i) => Polaroid(p, i)).join("")}</div>
     <div class="landing-polaroids landing-polaroids--right">${polaroids.slice(3).map((p, i) => Polaroid(p, i + 3)).join("")}</div>
     <section class="landing-core">
@@ -172,27 +281,139 @@ function LandingScreen() {
       <p class="capsule-note capsule-note--right">look inside <span>✦</span></p>
       ${EventCapsuleMachine("hero")}
       <div class="landing-actions">
-        ${HandDrawnButton("CREATE CAPSULE", { tone: "blue", icon: "◉", action: 'data-nav="event" data-created="true"' })}
+        ${HandDrawnButton("CREATE CAPSULE", { tone: "blue", icon: "◉", action: 'data-nav="setup"' })}
         <p class="join-label"><span>Already have a code?</span></p>
         <form class="join-form" id="join-form">
           <label class="sr-only" for="invite-code">Invite code</label>
-          <input id="invite-code" inputmode="numeric" maxlength="7" value="${event.inviteDisplay}" />
-          ${HandDrawnButton("JOIN", { tone: "coral", type: "submit" })}
+          <input id="invite-code" name="inviteCode" inputmode="numeric" maxlength="7" placeholder="583 219" autocomplete="one-time-code" aria-describedby="join-error" />
+          ${HandDrawnButton(appState.busy ? "FINDING..." : "JOIN", { tone: "coral", type: "submit" })}
+          <p class="form-error join-error" id="join-error" aria-live="polite"></p>
         </form>
       </div>
     </section>
-    <div class="landing-mascots mascot-group--left">${Mascot("astronaut", "Waving astronaut mascot")}${Mascot("alien", "Friendly alien mascot")}</div>
-    <div class="landing-mascots mascot-group--right">${Mascot("robot", "Friendly robot mascot")}${Mascot("star", "Smiling star mascot")}</div>
+    <div class="landing-mascots mascot-group--left">
+      <img src="./assets/mascot-crew-left.png" alt="A waving astronaut and friendly alien mascot" draggable="false" />
+    </div>
+    <div class="landing-mascots mascot-group--right">
+      <img src="./assets/mascot-crew-right.png" alt="A friendly robot and smiling star mascot" draggable="false" />
+    </div>
+  </main>`;
+}
+
+function CapsuleCapacityPicker() {
+  return `<div class="capacity-picker" role="group" aria-label="Capsule capacity">
+    ${CAPSULE_CAPACITIES.map((option) => `<button type="button" class="capacity-option ${appState.capsuleDraft.capacity === option.value ? "is-selected" : ""}" data-setup-capacity="${option.value}" aria-pressed="${appState.capsuleDraft.capacity === option.value}">
+      <strong>${option.value}</strong><span>${option.label}</span><i aria-hidden="true">✦</i>
+    </button>`).join("")}
+  </div>`;
+}
+
+function AccentColorPicker() {
+  return `<div class="accent-picker" role="group" aria-label="Capsule accent color">
+    ${Object.entries(CAPSULE_COLORS).map(([key, color]) => `<button type="button" class="accent-option ${appState.capsuleDraft.accentColor === key ? "is-selected" : ""}" style="--swatch:${color.value}" data-setup-accent="${key}" aria-label="${color.label}" aria-pressed="${appState.capsuleDraft.accentColor === key}"><i></i><span>${color.label}</span></button>`).join("")}
+  </div>`;
+}
+
+function EventStickerPicker() {
+  return `<div class="sticker-picker" role="group" aria-label="Event sticker">
+    ${Object.entries(CAPSULE_STICKERS).map(([key, sticker]) => `<button type="button" class="sticker-option ${appState.capsuleDraft.sticker === key ? "is-selected" : ""}" data-setup-sticker="${key}" aria-pressed="${appState.capsuleDraft.sticker === key}"><span class="sticker-icon sticker-icon--${key}" aria-hidden="true">${sticker.mark}</span><span>${sticker.label}</span></button>`).join("")}
+  </div>`;
+}
+
+function SetupFieldHeading(text, note = "") {
+  return `<div class="setup-field-heading"><h2>${text}</h2>${note ? `<span>${note}</span>` : ""}</div>`;
+}
+
+function CapsuleLivePreview() {
+  const draft = appState.capsuleDraft;
+  return `<aside class="setup-preview" aria-label="Live capsule preview">
+    <div class="preview-heading"><span>LIVE PREVIEW</span><i aria-hidden="true">✦</i></div>
+    <div class="preview-orbit" aria-hidden="true"></div>
+    ${EventCapsuleMachine("setup")}
+    <div class="preview-tags">
+      <p class="preview-date-tag"><span aria-hidden="true">☆</span><strong class="js-setup-date">${formatEventDateRange(draft.startDate, draft.endDate)}</strong></p>
+      <p class="preview-capacity-tag"><small>CAPACITY</small><strong class="js-setup-capacity">${draft.capacity} memories</strong></p>
+    </div>
+    <button type="button" class="surprise-button" data-surprise="true">SURPRISE ME <span aria-hidden="true">✦</span></button>
+    <p class="preview-whisper" aria-hidden="true">waiting for memories <span>↗</span></p>
+    <div class="activation-sparkles" aria-hidden="true"><i>✦</i><i>☆</i><i>✧</i><i>✦</i><i>·</i></div>
+  </aside>`;
+}
+
+function CreateCapsuleScreen() {
+  const draft = appState.capsuleDraft;
+  return `<main id="setup-screen" class="screen setup-screen ${appState.screen === "setup" ? "is-active" : ""}" data-screen="setup">
+    <button type="button" class="setup-back" data-nav="landing"><span aria-hidden="true">←</span> BACK</button>
+    <form id="capsule-setup-form" class="setup-layout" novalidate>
+      <section class="setup-sheet">
+        <header class="setup-intro">
+          ${Tape("tan", "setup-tape")}
+          ${HandwrittenHeading("CREATE YOUR CAPSULE", { level: 1, className: "setup-title", note: "make a home for this moment ✦" })}
+          <span class="setup-title-stars" aria-hidden="true">☆ &nbsp; ✦</span>
+        </header>
+
+        <section class="setup-field setup-field--name" data-setup-field="name">
+          ${SetupFieldHeading("WHAT ARE WE CALLING IT?")}
+          <label class="paper-input-wrap" for="setup-event-name"><span class="sr-only">Event name</span><input id="setup-event-name" name="name" maxlength="80" autocomplete="off" value="${esc(draft.name)}" /></label>
+          <p class="setup-error js-error-name" aria-live="polite"></p>
+        </section>
+
+        <section class="setup-field setup-field--dates" data-setup-field="dates">
+          ${SetupFieldHeading("WHEN IS IT HAPPENING?")}
+          <span class="calendar-doodle" aria-hidden="true">□<i>8</i><b>✦</b></span>
+          <div class="date-pair">
+            <label><span>STARTS</span><input id="setup-start-date" name="startDate" type="date" value="${esc(draft.startDate)}" /></label>
+            <span class="date-arrow" aria-hidden="true">↝</span>
+            <label><span>ENDS</span><input id="setup-end-date" name="endDate" type="date" value="${esc(draft.endDate)}" /></label>
+          </div>
+          <p class="setup-error js-error-dates" aria-live="polite"></p>
+        </section>
+
+        <section class="setup-field setup-field--capacity" data-setup-field="capacity">
+          ${SetupFieldHeading("HOW BIG SHOULD IT BE?")}
+          ${CapsuleCapacityPicker()}
+          <p class="setup-error js-error-capacity" aria-live="polite"></p>
+        </section>
+
+        <section class="setup-field setup-field--accent" data-setup-field="accentColor">
+          ${SetupFieldHeading("PICK YOUR COLOR")}
+          ${AccentColorPicker()}
+          <p class="setup-error js-error-accent" aria-live="polite"></p>
+        </section>
+
+        <section class="setup-field setup-field--sticker" data-setup-field="sticker">
+          ${SetupFieldHeading("PICK YOUR MARK")}
+          ${EventStickerPicker()}
+          <p class="setup-error js-error-sticker" aria-live="polite"></p>
+        </section>
+
+        <section class="setup-field setup-field--description" data-setup-field="description">
+          ${SetupFieldHeading("LEAVE A LITTLE NOTE", "optional")}
+          <label class="paper-textarea-wrap" for="setup-description"><span class="sr-only">Short event description</span><textarea id="setup-description" name="description" maxlength="120" placeholder="Our shared SummerHacks memory capsule.">${esc(draft.description)}</textarea></label>
+          <span class="description-count"><b class="js-description-count">${draft.description.length}</b>/120</span>
+        </section>
+
+        <div class="setup-submit-wrap">
+          ${HandDrawnButton("CREATE CAPSULE →", { tone: "blue", type: "submit", className: "setup-submit" })}
+          <p>ready in a tiny cosmic moment ✦</p>
+        </div>
+      </section>
+      ${CapsuleLivePreview()}
+    </form>
   </main>`;
 }
 
 function EventScreen() {
-  const capsuleFull = appState.memoryCount >= event.memoryLimit;
-  return `<main id="event-screen" class="screen event-screen" data-screen="event">
+  const currentEvent = appState.event;
+  const capacity = currentEvent?.capacity || appState.capsuleDraft.capacity;
+  const capsuleFull = appState.memoryCount >= capacity;
+  const dateLabel = currentEvent ? formatEventDateRange(currentEvent.startDate, currentEvent.endDate) : "";
+  return `<main id="event-screen" class="screen event-screen ${appState.screen === "event" ? "is-active" : ""}" data-screen="event">
     <header class="event-header">
       <div>
-        ${HandwrittenHeading(event.title, { level: 1, className: "event-title" })}
-        <p class="memory-count"><span data-memory-total>${appState.memoryCount}</span> memories so far!</p>
+        ${HandwrittenHeading(currentEvent?.name || "opening capsule...", { level: 1, className: "event-title" })}
+        <p class="memory-count"><span id="memory-count" data-memory-total>${appState.memoryCount}</span> / ${capacity} memories so far!</p>
+        ${currentEvent ? `<div class="event-keepsake-meta"><strong>${esc(dateLabel)}</strong>${currentEvent.description ? `<span>${esc(currentEvent.description)}</span>` : ""}</div>` : ""}
       </div>
       ${HandDrawnButton("SHARE ↗", { tone: "paper", className: "share-button", action: 'data-open="invite"' })}
     </header>
@@ -228,11 +449,11 @@ function MoodPicker() {
 function PostcardPreview() {
   return `<article class="postcard postcard--preview">
     ${Tape("coral", "postcard-tape")}
-    <label class="postcard-photo js-user-photo" for="photo-input" aria-label="Choose a photo from your computer">${appState.photo ? `<img src="${esc(appState.photo)}" alt="Selected memory preview" />` : UploadPlaceholder(true)}</label>
+    <label class="postcard-photo js-user-photo" for="photo-input" aria-label="Choose a photo from your computer">${appState.photoPreview ? `<img src="${esc(appState.photoPreview)}" alt="Selected memory preview" />` : UploadPlaceholder(true)}</label>
     <div class="postcard-copy">
       <span class="postal-lines" aria-hidden="true">〰〰〰</span>
       <span class="stamp">☆</span>
-      <p class="js-preview-message">${esc(appState.message)}</p>
+      <p class="js-preview-message">${esc(appState.message || "Your memory goes here…")}</p>
       <span class="postcard-author js-preview-author">— ${esc(appState.author.trim() || "Anonymous")}</span>
       <span class="mood-sticker js-preview-mood">${appState.mood}</span>
     </div>
@@ -246,15 +467,15 @@ function AddMemoryModal() {
     <div class="add-memory-grid">
       <section class="add-photo-column">
         <h3>PHOTO</h3>
-        <label class="polaroid upload-polaroid" for="photo-input" aria-label="Upload a photo from your computer">${Tape("blue", "polaroid-tape")}<div class="photo-scene photo-scene--upload js-user-photo">${appState.photo ? `<img src="${esc(appState.photo)}" alt="Selected memory preview" />` : UploadPlaceholder()}</div>${Tape("blue", "corner-tape")}</label>
+        <label class="polaroid upload-polaroid" for="photo-input" aria-label="Upload a photo from your computer">${Tape("blue", "polaroid-tape")}<div class="photo-scene photo-scene--upload js-user-photo">${appState.photoPreview ? `<img src="${esc(appState.photoPreview)}" alt="Selected memory preview" />` : UploadPlaceholder()}</div>${Tape("blue", "corner-tape")}</label>
         <label class="change-photo" for="photo-input"><span aria-hidden="true">▣</span> CHANGE PHOTO</label>
-        <input class="sr-only" id="photo-input" type="file" accept="image/*" />
+        <input class="sr-only" id="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
       </section>
       <section class="add-details-column">
         <label for="memory-author">Your name <span class="optional-label">(optional)</span></label>
         <input id="memory-author" type="text" maxlength="9" autocomplete="name" placeholder="e.g. Alex" value="${esc(appState.author)}" />
         <label for="memory-message">What’s on your mind right now?</label>
-        <textarea id="memory-message" maxlength="${MEMORY_MESSAGE_MAX_LENGTH}">${esc(appState.message)}</textarea>
+        <textarea id="memory-message" maxlength="${MEMORY_MESSAGE_MAX_LENGTH}" placeholder="Write a short memory…">${esc(appState.message)}</textarea>
         <h3>MOOD</h3>
         ${MoodPicker()}
       </section>
@@ -263,6 +484,7 @@ function AddMemoryModal() {
         ${PostcardPreview()}
       </section>
     </div>
+    <p class="form-error memory-error" id="memory-error" aria-live="polite"></p>
     ${HandDrawnButton("NEXT", { tone: "blue", icon: "→", className: "add-next", action: 'data-next="draw"' })}
   </div>`;
   return PaperModal(content, "add", "add-modal");
@@ -302,8 +524,9 @@ function DrawModal() {
       </aside>
       <section class="drawing-stage">${EnvelopeCustomizer()}${DrawingToolbar()}</section>
       <aside class="send-panel">
-        ${HandDrawnButton("SEND TO CAPSULE", { tone: "coral", icon: "➶", action: 'data-send="drawing"' })}
-        <button class="skip-button" data-send="skip">SKIP</button>
+        ${HandDrawnButton(appState.busy ? "SENDING MEMORY..." : "SEND TO CAPSULE", { tone: "coral", icon: "➶", action: 'data-send="true"' })}
+        <button class="skip-button" data-send="true" data-skip-drawing="true">SKIP</button>
+        <p class="form-error draw-error" id="draw-error" aria-live="polite"></p>
       </aside>
     </div>
   </div>`;
@@ -312,33 +535,33 @@ function DrawModal() {
 
 function MemoryPostcard(memory) {
   return `<article class="memory-postcard" tabindex="-1" aria-label="Postcard from ${esc(memory.author || "Anonymous")}">
-    <div class="memory-photo-frame">${Tape("blue", "memory-photo-tape")}${memory.photo ? `<img class="memory-user-photo" src="${esc(memory.photo)}" alt="Memory shared by ${esc(memory.author || "Anonymous")}" />` : PhotoScene(memory.scene)}</div>
+    <div class="memory-photo-frame">${Tape("blue", "memory-photo-tape")}${PhotoScene("", "", false, memory.imageUrl)}</div>
     <div class="memory-copy">
-      <span class="mood-sticker">${memory.mood}</span>
-      <span class="stamp stamp--memory">${memory.stamp === "planet" ? "♄" : memory.stamp === "rocket" ? "➶" : "★"}</span>
+      <span class="mood-sticker">${esc(memory.emoji)}</span>
+      <span class="stamp stamp--memory">♄</span>
       <p>${esc(memory.message)}</p>
       <span class="memory-author">— ${esc(memory.author || "Anonymous")}</span>
       <span class="writing-lines"></span>
-      <div class="memory-meta"><span>♄ ✧</span><span><strong>${memory.date}</strong><br>${memory.relativeTime}</span></div>
+      <div class="memory-meta"><span>♄ ✧</span><span><strong>${formatMemoryDate(memory.createdAt)}</strong><br>${relativeTime(memory.createdAt)}</span></div>
     </div>
   </article>`;
 }
 
 function SealedMemoryEnvelope(memory) {
-  const art = memory.envelopeArt || {
+  const art = {
     ink: "#2357d8",
     phrase: "A LITTLE MEMORY",
-    symbol: "✦",
+    symbol: memory.emoji || "✦",
     trail: "⌁  ·  ☆",
   };
-  const drawing = memory.drawing
-    ? `<img class="viewer-drawing-image" src="${esc(memory.drawing)}" alt="Drawing by ${esc(memory.author || "Anonymous")}" />`
+  const drawing = memory.envelopeDrawing
+    ? `<img class="viewer-drawing-image" src="${esc(memory.envelopeDrawing)}" alt="Drawing by ${esc(memory.author || "Anonymous")}" />`
     : `<span class="viewer-drawing-symbol">${esc(art.symbol)}</span>
       <span class="viewer-drawing-phrase">${esc(art.phrase)}</span>
       <span class="viewer-drawing-trail">${esc(art.trail)}</span>
       <span class="viewer-drawing-orbit"></span>`;
 
-  return `<button class="sealed-memory-envelope envelope--${memory.envelopeColor || "cream"}" data-rip-memory style="--drawing-ink:${esc(art.ink || "#2357d8")}" aria-describedby="memory-viewer-hint" aria-label="Rip open ${esc(memory.author || "this guest")}'s envelope">
+  return `<button class="sealed-memory-envelope envelope--${memory.envelopeColor || "cream"}" data-rip-memory style="--drawing-ink:${art.ink}" aria-describedby="memory-viewer-hint" aria-label="Rip open ${esc(memory.author || "this guest")}'s envelope">
     <span class="sealed-envelope-shadow" aria-hidden="true"></span>
     <img class="sealed-envelope-art" src="./assets/leave-your-mark-envelope.png" alt="" draggable="false" />
     <span class="viewer-envelope-drawing">${drawing}</span>
@@ -354,33 +577,33 @@ function OpenedMemoryEnvelope(memory) {
 }
 
 function MemoryViewer() {
-  const memory = mockMemories[appState.memoryIndex];
+  const memory = appState.memories[appState.memoryIndex];
+  const stage = memory
+    ? SealedMemoryEnvelope(memory)
+    : `<article class="memory-postcard empty-memory"><p>No memories have been sent yet.<br><small>Be the first to add one ✦</small></p></article>`;
+  const navigationState = memory ? "" : "disabled aria-disabled=\"true\"";
   return `<section class="modal-layer memory-layer" data-modal="viewer" aria-hidden="true">
     <div class="modal-scrim" data-close="viewer"></div>
     <button class="close-button viewer-close" data-close="viewer" aria-label="Close memory viewer">×</button>
-    ${HandDrawnButton("PREV ENVELOPE", { tone: "paper", icon: "←", className: "memory-nav memory-nav--prev", action: 'data-memory-nav="-1"' })}
+    ${HandDrawnButton("PREV ENVELOPE", { tone: "paper", icon: "←", className: "memory-nav memory-nav--prev", action: `data-memory-nav="-1" ${navigationState}` })}
     <div class="memory-viewer-center">
       <div class="memory-viewer-heading" aria-hidden="true"><span>✦</span><strong>A MEMORY FOUND YOU</strong><span>✦</span></div>
-      <div class="memory-envelope-stage" id="memory-envelope-stage">${SealedMemoryEnvelope(memory)}</div>
-      <p class="memory-viewer-hint" id="memory-viewer-hint">Click the envelope to rip it open <span>↗</span></p>
-      <p class="memory-viewer-count" id="memory-viewer-count">ENVELOPE ${appState.memoryIndex + 1} / ${mockMemories.length}</p>
+      <div class="memory-envelope-stage" id="memory-envelope-stage">${stage}</div>
+      <p class="memory-viewer-hint" id="memory-viewer-hint">${memory ? "Click the envelope to rip it open <span>↗</span>" : "Waiting for the first memory ✦"}</p>
+      <p class="memory-viewer-count" id="memory-viewer-count">${memory ? `ENVELOPE ${appState.memoryIndex + 1} / ${appState.memories.length}` : "NO ENVELOPES YET"}</p>
     </div>
-    ${HandDrawnButton("NEXT ENVELOPE", { tone: "paper", icon: "→", className: "memory-nav memory-nav--next", action: 'data-memory-nav="1"' })}
+    ${HandDrawnButton("NEXT ENVELOPE", { tone: "paper", icon: "→", className: "memory-nav memory-nav--next", action: `data-memory-nav="1" ${navigationState}` })}
   </section>`;
 }
 
 function InviteModal() {
-  const cells = Array.from({ length: 21 * 21 }, (_, index) => {
-    const row = Math.floor(index / 21); const col = index % 21;
-    const finder = (row < 7 && col < 7) || (row < 7 && col > 13) || (row > 13 && col < 7);
-    const dark = finder ? (row % 6 !== 1 && col % 6 !== 1) : ((row * 7 + col * 11 + row * col) % 5 < 2);
-    return `<i class="${dark ? "dark" : ""}"></i>`;
-  }).join("");
+  const currentEvent = appState.event;
+  const code = currentEvent?.inviteCode || "------";
   const content = `<div class="modal-content invite-content">
     ${HandwrittenHeading("INVITE EVERYONE", { level: 2, className: "modal-title" })}${Doodle("star", "title-doodle")}
     <div class="invite-grid">
-      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card"><div class="mock-qr" aria-label="Decorative mock QR code">${cells}</div></div>${Mascot("astronaut", "Astronaut pointing to mock QR code")}</section>
-      <section class="code-side"><h3>INVITE CODE</h3><div class="invite-code">${event.inviteDisplay}</div><div class="invite-url"><span>♄</span>${event.inviteUrl}</div>
+      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${currentEvent ? `<img class="event-qr" src="/api/events/${esc(currentEvent.id)}/qr" alt="QR code for this event capsule" />` : ""}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
+      <section class="code-side"><h3>INVITE CODE</h3><div class="invite-code">${inviteDisplay(code)}</div><div class="invite-url"><span>♄</span>${esc(inviteUrl().replace(/^https?:\/\//, ""))}</div>
         ${HandDrawnButton("COPY CODE", { tone: "blue", icon: "▣", action: 'data-copy="code"' })}
         ${HandDrawnButton("COPY LINK", { tone: "paper", icon: "↗", action: 'data-copy="link"' })}
       </section>
@@ -390,26 +613,35 @@ function InviteModal() {
 }
 
 function MoodRows() {
-  return mockPulseData.moods.map((mood) => `<div class="pulse-mood-row"><span class="pulse-emoji">${mood.emoji}</span><span class="pulse-mood-label">${mood.label}</span><strong>${mood.value}%</strong><span class="marker-bar marker-bar--${mood.color}" style="--value:${mood.value}"><i></i></span></div>`).join("");
+  const rows = appState.pulse?.moods || [];
+  if (!rows.length) return `<div class="pulse-empty">✦ mood analysis pending</div>`;
+  return rows.slice(0, 5).map((mood, index) => `<div class="pulse-mood-row"><span class="pulse-emoji">${MOOD_EMOJIS[mood.label] || "✦"}</span><span class="pulse-mood-label">${esc(mood.label)}</span><strong>${mood.percentage}%</strong><span class="marker-bar marker-bar--${PULSE_COLORS[index % PULSE_COLORS.length]}" style="--value:${mood.percentage}"><i></i></span></div>`).join("");
 }
 
 function EventPulseScreen() {
-  return `<main id="pulse-screen" class="screen pulse-screen" data-screen="pulse">
+  const pulse = appState.pulse || { memoryCount: appState.memoryCount, moods: [], themes: [], visualTags: [], timeline: [], peak: null, analyzedMemoryCount: 0 };
+  const themes = pulse.themes.length ? pulse.themes.slice(0, 6) : [{ label: "analysis pending" }];
+  const objects = pulse.visualTags.length ? pulse.visualTags.slice(0, 4) : [{ label: "pending", empty: true }];
+  const peakLabel = pulse.peak ? new Date(pulse.peak.bucket).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "waiting...";
+  const story = pulse.analyzedMemoryCount
+    ? `The strongest analyzed mood is ${pulse.moods[0]?.label || "still emerging"}${pulse.themes[0] ? `, with ${pulse.themes[0].label} appearing most often` : ""}.`
+    : "TECHNATION analysis is still pending. This story will use real mood, theme, and visual metadata once analysis completes.";
+  return `<main id="pulse-screen" class="screen pulse-screen ${appState.screen === "pulse" ? "is-active" : ""}" data-screen="pulse">
     <section class="notebook">
       ${Tape("tan", "notebook-tape notebook-tape--left")}${Tape("tan", "notebook-tape notebook-tape--right")}
       <div class="notebook-page notebook-page--left">
         ${HandwrittenHeading("EVENT PULSE", { level: 1, className: "pulse-title", note: "what did today feel like?" })}
-        <div class="memory-total"><strong data-memory-total>${appState.memoryCount}</strong> Memories</div>
+        <div class="memory-total"><strong>${pulse.memoryCount}</strong> Memories</div>
         <h2 class="scribble-subhead">How the room felt</h2>${MoodRows()}
         <h2 class="scribble-subhead">What everyone talked about</h2>
-        <div class="theme-cloud">${mockPulseData.themes.map((theme) => `<span class="theme theme--${theme.color}">${theme.label}</span>`).join("")}</div>
+        <div class="theme-cloud">${themes.map((theme, index) => `<span class="theme theme--${PULSE_COLORS[index % PULSE_COLORS.length]}">${esc(theme.label.toUpperCase())}</span>`).join("")}</div>
       </div>
       <div class="notebook-page notebook-page--right">
         <h2 class="scribble-subhead">What kept showing up</h2>
-        <div class="pulse-objects">${mockPulseData.objects.map((obj) => `<div><span>${obj.icon}</span><p>${obj.label}</p></div>`).join("")}</div>
-        <div class="timeline-head"><h2 class="scribble-subhead">Memories through the day</h2><p>Peak moment:<br><strong>${mockPulseData.peak}</strong></p></div>
-        <canvas id="pulse-chart" aria-label="Mock memories through the day line chart"></canvas>
-        <article class="story-card">${Tape("tan", "story-tape")}<h2>☆ The Story of the Day</h2><p>${esc(mockPulseData.story)}</p><span>♡</span></article>
+        <div class="pulse-objects">${objects.map((obj) => `<div><span>${obj.empty ? "✦" : "◉"}</span><p>${esc(obj.label)}</p></div>`).join("")}</div>
+        <div class="timeline-head"><h2 class="scribble-subhead">Memories through the day</h2><p>Peak moment:<br><strong>${esc(peakLabel)}</strong></p></div>
+        <canvas id="pulse-chart" aria-label="Memories through the day line chart"></canvas>
+        <article class="story-card">${Tape("tan", "story-tape")}<h2>☆ The Story of the Day</h2><p>${esc(story)}</p><span>♡</span></article>
         <button class="text-link pulse-back" data-nav="event">← BACK TO CAPSULE</button>
       </div>
     </section>
@@ -417,20 +649,138 @@ function EventPulseScreen() {
 }
 
 function renderApp() {
-  app.innerHTML = `${SpaceBackground()}<div class="app-shell">${LandingScreen()}${EventScreen()}${EventPulseScreen()}</div>${AddMemoryModal()}${DrawModal()}${MemoryViewer()}${InviteModal()}`;
-  bindInteractions();
+  app.innerHTML = `${SpaceBackground()}<div class="app-shell">${LandingScreen()}${CreateCapsuleScreen()}${EventScreen()}${EventPulseScreen()}</div>${AddMemoryModal()}${DrawModal()}${MemoryViewer()}${InviteModal()}`;
+  if (appState.screen === "pulse") requestAnimationFrame(drawPulseChart);
 }
 
 function showScreen(name) {
+  if (!["landing", "setup"].includes(name) && !appState.event) return;
   appState.screen = name;
   document.querySelectorAll("[data-screen]").forEach((screen) => screen.classList.toggle("is-active", screen.dataset.screen === name));
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (name === "pulse") requestAnimationFrame(drawPulseChart);
 }
 
+function validateCapsuleSetup() {
+  const draft = appState.capsuleDraft;
+  const errors = {};
+  if (!draft.name.trim()) errors.name = "✦ give your capsule a name";
+  if (!draft.startDate) errors.dates = "✦ pick a start date";
+  else if (!draft.endDate) errors.dates = "✦ pick an end date";
+  else if (draft.endDate < draft.startDate) errors.dates = "✦ end date can't be before the start";
+  if (!CAPSULE_CAPACITIES.some((option) => option.value === Number(draft.capacity))) errors.capacity = "✦ choose how many memories it can hold";
+  if (!CAPSULE_COLORS[draft.accentColor]) errors.accent = "✦ pick a capsule color";
+  if (!CAPSULE_STICKERS[draft.sticker]) errors.sticker = "✦ pick a little mark";
+  return errors;
+}
+
+function showSetupErrors(errors = {}) {
+  const targets = {
+    name: ".js-error-name",
+    dates: ".js-error-dates",
+    capacity: ".js-error-capacity",
+    accent: ".js-error-accent",
+    sticker: ".js-error-sticker",
+  };
+  Object.entries(targets).forEach(([key, selector]) => {
+    const node = document.querySelector(selector);
+    if (node) node.textContent = errors[key] || "";
+  });
+}
+
+function updateCapsuleSetupPreview() {
+  const draft = appState.capsuleDraft;
+  const name = draft.name.trim() || "YOUR EVENT";
+  const dateInvalid = draft.startDate && draft.endDate && draft.endDate < draft.startDate;
+  const dateTag = document.querySelector(".preview-date-tag");
+  document.querySelectorAll(".capsule-machine--setup .js-setup-name").forEach((node) => { node.textContent = name; });
+  document.querySelector(".capsule-machine--setup .capsule-art-label")?.classList.toggle("is-long", name.length > 18);
+  document.querySelectorAll(".js-setup-date").forEach((node) => { node.textContent = dateInvalid ? "CHECK YOUR DATES" : formatEventDateRange(draft.startDate, draft.endDate); });
+  dateTag?.classList.toggle("is-invalid", Boolean(dateInvalid));
+  document.querySelectorAll(".js-setup-capacity").forEach((node) => { node.textContent = `${draft.capacity} memories`; });
+  const machine = document.querySelector(".capsule-machine--setup");
+  machine?.style.setProperty("--capsule-accent", CAPSULE_COLORS[draft.accentColor]?.value || CAPSULE_COLORS.blue.value);
+  if (machine) machine.setAttribute("aria-label", `Illustrated capsule preview for ${name}`);
+  const machineSticker = machine?.querySelector(".capsule-event-sticker");
+  if (machineSticker) {
+    const sticker = CAPSULE_STICKERS[draft.sticker] || CAPSULE_STICKERS.star;
+    machineSticker.dataset.sticker = draft.sticker;
+    machineSticker.querySelector(".sticker-icon").textContent = sticker.mark;
+  }
+  document.querySelectorAll("[data-setup-capacity]").forEach((button) => {
+    const selected = Number(button.dataset.setupCapacity) === Number(draft.capacity);
+    button.classList.toggle("is-selected", selected); button.setAttribute("aria-pressed", String(selected));
+  });
+  document.querySelectorAll("[data-setup-accent]").forEach((button) => {
+    const selected = button.dataset.setupAccent === draft.accentColor;
+    button.classList.toggle("is-selected", selected); button.setAttribute("aria-pressed", String(selected));
+  });
+  document.querySelectorAll("[data-setup-sticker]").forEach((button) => {
+    const selected = button.dataset.setupSticker === draft.sticker;
+    button.classList.toggle("is-selected", selected); button.setAttribute("aria-pressed", String(selected));
+  });
+  const count = document.querySelector(".js-description-count");
+  if (count) count.textContent = String(draft.description.length);
+  const errors = validateCapsuleSetup();
+  showSetupErrors({ dates: errors.dates });
+}
+
+function surpriseCapsule() {
+  const differentChoice = (choices, current) => {
+    const remaining = choices.filter((choice) => choice !== current);
+    return remaining[Math.floor(Math.random() * remaining.length)] || current;
+  };
+  appState.capsuleDraft.accentColor = differentChoice(Object.keys(CAPSULE_COLORS), appState.capsuleDraft.accentColor);
+  appState.capsuleDraft.sticker = differentChoice(Object.keys(CAPSULE_STICKERS), appState.capsuleDraft.sticker);
+  updateCapsuleSetupPreview();
+  const machine = document.querySelector(".setup-preview .capsule-machine");
+  machine?.classList.add("is-surprised");
+  setTimeout(() => machine?.classList.remove("is-surprised"), 520);
+}
+
+async function createFrontendCapsule() {
+  if (appState.busy) return;
+  const errors = validateCapsuleSetup();
+  showSetupErrors(errors);
+  if (Object.keys(errors).length) {
+    const focusTarget = errors.name ? "#setup-event-name" : errors.dates ? "#setup-start-date" : errors.capacity ? "[data-setup-capacity]" : errors.accent ? "[data-setup-accent]" : "[data-setup-sticker]";
+    document.querySelector(focusTarget)?.focus();
+    return;
+  }
+  const screen = document.querySelector("#setup-screen");
+  const submit = document.querySelector(".setup-submit");
+  screen?.classList.add("is-creating");
+  screen?.setAttribute("aria-busy", "true");
+  if (submit) { submit.disabled = true; submit.querySelector("span:last-child").textContent = "ACTIVATING..."; }
+  appState.busy = true;
+  showToast("creating capsule...");
+  const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 80 : 1050;
+  const draft = { ...appState.capsuleDraft, name: appState.capsuleDraft.name.trim(), description: appState.capsuleDraft.description.trim() };
+  try {
+    const [{ event }] = await Promise.all([
+      api("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      }),
+      new Promise((resolve) => setTimeout(resolve, delay)),
+    ]);
+    appState.busy = false;
+    await enterEvent(event, { announce: "Your capsule is ready for memories! ✦" });
+  } catch (error) {
+    screen?.classList.remove("is-creating");
+    screen?.removeAttribute("aria-busy");
+    if (submit) { submit.disabled = false; submit.querySelector("span:last-child").textContent = "CREATE CAPSULE →"; }
+    showToast(error.message || "Capsule couldn’t be created. Try again.");
+  } finally {
+    appState.busy = false;
+  }
+}
+
 function openModal(name) {
-  if (name === "add" && appState.memoryCount >= event.memoryLimit) {
-    showToast(`This capsule is full at ${event.memoryLimit} memories.`);
+  const capacity = appState.event?.capacity || appState.capsuleDraft.capacity;
+  if (name === "add" && appState.memoryCount >= capacity) {
+    showToast(`This capsule is full at ${capacity} memories.`);
     return;
   }
   appState.modal = name;
@@ -439,7 +789,7 @@ function openModal(name) {
   if (name === "viewer") prepareMemoryViewer(true);
   modal.classList.add("is-open"); modal.setAttribute("aria-hidden", "false"); document.body.classList.add("modal-open");
   if (name === "draw") requestAnimationFrame(setupDrawingCanvas);
-  modal.querySelector(name === "viewer" ? "[data-rip-memory]" : "button, input, textarea")?.focus({ preventScroll: true });
+  modal.querySelector(name === "viewer" ? "[data-rip-memory], .viewer-close" : "button, input, textarea")?.focus({ preventScroll: true });
 }
 
 function closeModal(name) {
@@ -458,19 +808,6 @@ function showToast(message) {
   clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toastEl.classList.remove("is-visible"), 2400);
 }
 
-function updateMemoryTotals() {
-  document.querySelectorAll("[data-memory-total]").forEach((node) => { node.textContent = appState.memoryCount; });
-  const addButton = document.querySelector("[data-add-memory]");
-  if (!addButton) return;
-  const capsuleFull = appState.memoryCount >= event.memoryLimit;
-  addButton.disabled = capsuleFull;
-  addButton.setAttribute("aria-disabled", capsuleFull ? "true" : "false");
-  if (capsuleFull) addButton.removeAttribute("data-open");
-  else addButton.setAttribute("data-open", "add");
-  const label = addButton.querySelector("span:last-child");
-  if (label) label.textContent = capsuleFull ? "CAPSULE FULL" : "ADD YOUR MEMORY";
-}
-
 function updatePreviews() {
   document.querySelectorAll(".js-preview-message").forEach((node) => { node.textContent = appState.message || "Your memory goes here…"; });
   document.querySelectorAll(".js-preview-author").forEach((node) => { node.textContent = `— ${appState.author.trim() || "Anonymous"}`; });
@@ -479,32 +816,53 @@ function updatePreviews() {
     const selected = button.dataset.mood === appState.mood;
     button.classList.toggle("is-selected", selected); button.setAttribute("aria-checked", selected ? "true" : "false");
   });
-  if (appState.photo) document.querySelectorAll(".js-user-photo").forEach((node) => { node.innerHTML = `<img src="${appState.photo}" alt="Selected memory preview" />`; });
+  if (appState.photoPreview) document.querySelectorAll(".js-user-photo").forEach((node) => { node.innerHTML = `<img src="${esc(appState.photoPreview)}" alt="Selected memory preview" />`; });
+}
+
+function updateMemoryTotals() {
+  document.querySelectorAll("[data-memory-total]").forEach((node) => { node.textContent = appState.memoryCount; });
+  const addButton = document.querySelector("[data-add-memory]");
+  if (!addButton) return;
+  const capacity = appState.event?.capacity || appState.capsuleDraft.capacity;
+  const capsuleFull = appState.memoryCount >= capacity;
+  addButton.disabled = capsuleFull;
+  addButton.setAttribute("aria-disabled", capsuleFull ? "true" : "false");
+  if (capsuleFull) addButton.removeAttribute("data-open");
+  else addButton.setAttribute("data-open", "add");
+  const label = addButton.querySelector("span:last-child");
+  if (label) label.textContent = capsuleFull ? "CAPSULE FULL" : "ADD YOUR MEMORY";
 }
 
 function randomMemoryIndex() {
-  if (mockMemories.length < 2 || !appState.hasPickedMemory) return Math.floor(Math.random() * mockMemories.length);
-  const offset = 1 + Math.floor(Math.random() * (mockMemories.length - 1));
-  return (appState.memoryIndex + offset) % mockMemories.length;
+  if (!appState.memories.length) return 0;
+  if (appState.memories.length < 2 || !appState.hasPickedMemory) return Math.floor(Math.random() * appState.memories.length);
+  const offset = 1 + Math.floor(Math.random() * (appState.memories.length - 1));
+  return (appState.memoryIndex + offset) % appState.memories.length;
 }
 
 function updateMemoryViewerDetails(message = "Click the envelope to rip it open") {
   const hint = document.querySelector("#memory-viewer-hint");
   const count = document.querySelector("#memory-viewer-count");
-  if (hint) hint.innerHTML = `${esc(message)} <span aria-hidden="true">↗</span>`;
-  if (count) count.textContent = `ENVELOPE ${appState.memoryIndex + 1} / ${mockMemories.length}`;
+  if (hint) hint.innerHTML = appState.memories.length ? `${esc(message)} <span aria-hidden="true">↗</span>` : "Waiting for the first memory ✦";
+  if (count) count.textContent = appState.memories.length ? `ENVELOPE ${appState.memoryIndex + 1} / ${appState.memories.length}` : "NO ENVELOPES YET";
 }
 
 function prepareMemoryViewer(pickRandom = false) {
-  if (!mockMemories.length) return;
   clearTimeout(appState.memoryViewerTimer);
+  const stage = document.querySelector("#memory-envelope-stage");
+  if (!appState.memories.length) {
+    appState.memoryIndex = 0;
+    appState.memoryViewerPhase = "sealed";
+    updateMemoryViewerDetails();
+    document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = true; });
+    return;
+  }
   if (pickRandom) appState.memoryIndex = randomMemoryIndex();
   appState.hasPickedMemory = true;
   appState.memoryViewerPhase = "sealed";
-  const stage = document.querySelector("#memory-envelope-stage");
   if (stage) {
     stage.className = "memory-envelope-stage is-arriving";
-    stage.innerHTML = SealedMemoryEnvelope(mockMemories[appState.memoryIndex]);
+    stage.innerHTML = SealedMemoryEnvelope(appState.memories[appState.memoryIndex]);
     requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.remove("is-arriving")));
   }
   updateMemoryViewerDetails();
@@ -512,17 +870,17 @@ function prepareMemoryViewer(pickRandom = false) {
 }
 
 function refreshMemoryCard(direction = 1) {
-  if (appState.memoryViewerPhase === "ripping" || mockMemories.length < 2) return;
+  if (appState.memoryViewerPhase === "ripping" || appState.memories.length < 2) return;
   appState.memoryViewerPhase = "cycling";
   const stage = document.querySelector("#memory-envelope-stage");
   if (!stage) return;
   document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = true; });
   stage.classList.add(direction > 0 ? "is-cycling-next" : "is-cycling-prev");
   appState.memoryViewerTimer = setTimeout(() => {
-    appState.memoryIndex = (appState.memoryIndex + direction + mockMemories.length) % mockMemories.length;
+    appState.memoryIndex = (appState.memoryIndex + direction + appState.memories.length) % appState.memories.length;
     appState.memoryViewerPhase = "sealed";
     stage.className = `memory-envelope-stage ${direction > 0 ? "is-entering-next" : "is-entering-prev"}`;
-    stage.innerHTML = SealedMemoryEnvelope(mockMemories[appState.memoryIndex]);
+    stage.innerHTML = SealedMemoryEnvelope(appState.memories[appState.memoryIndex]);
     updateMemoryViewerDetails();
     requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.remove("is-entering-next", "is-entering-prev")));
     setTimeout(() => document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = false; }), 260);
@@ -542,7 +900,7 @@ function ripMemoryEnvelope() {
   appState.memoryViewerTimer = setTimeout(() => {
     appState.memoryViewerPhase = "open";
     stage.classList.add("is-opening");
-    stage.innerHTML = OpenedMemoryEnvelope(mockMemories[appState.memoryIndex]);
+    stage.innerHTML = OpenedMemoryEnvelope(appState.memories[appState.memoryIndex]);
     updateMemoryViewerDetails("Postcard revealed — choose another envelope to keep exploring");
     document.querySelectorAll("[data-memory-nav]").forEach((button) => { button.disabled = false; });
     setTimeout(() => {
@@ -553,33 +911,153 @@ function ripMemoryEnvelope() {
 }
 
 async function copyValue(kind) {
-  const value = kind === "code" ? event.inviteCode : `https://${event.inviteUrl}`;
+  if (!appState.event) return;
+  const value = kind === "code" ? appState.event.inviteCode : inviteUrl();
   try { await navigator.clipboard.writeText(value); showToast(kind === "code" ? "Invite code copied!" : "Invite link copied!"); }
   catch { showToast(`Copy this: ${value}`); }
 }
 
-function submitMemory(includeDrawing = true) {
-  if (appState.isSubmitting) return;
-  if (appState.memoryCount >= event.memoryLimit) {
-    closeModal("draw");
-    updateMemoryTotals();
-    showToast(`This capsule is full at ${event.memoryLimit} memories.`);
+function setInlineError(id, message = "") {
+  const node = document.querySelector(`#${id}`);
+  if (node) node.textContent = message;
+}
+
+async function enterEvent(event, { replaceHistory = false, announce = "" } = {}) {
+  const { memories } = await api(`/api/events/${event.id}/memories`);
+  appState.event = event;
+  appState.memories = memories;
+  appState.memoryCount = event.memoryCount ?? memories.length;
+  appState.memoryIndex = 0;
+  appState.memoryViewerPhase = "sealed";
+  appState.hasPickedMemory = false;
+  appState.pulse = null;
+  appState.screen = "event";
+  const method = replaceHistory ? "replaceState" : "pushState";
+  window.history[method]({ inviteCode: event.inviteCode }, "", `/${event.inviteCode}`);
+  renderApp();
+  if (announce) showToast(announce);
+}
+
+async function joinCapsule(form) {
+  if (appState.busy) return;
+  const code = String(new FormData(form).get("inviteCode") || form.querySelector("#invite-code")?.value || "").replace(/\s/g, "");
+  setInlineError("join-error");
+  if (!/^\d{6}$/.test(code)) {
+    setInlineError("join-error", "Enter a 6-digit invite code.");
     return;
   }
+  appState.busy = true;
+  showToast("finding capsule...");
+  try {
+    const { event } = await api(`/api/events/join/${code}`);
+    await enterEvent(event, { announce: `Joined ${event.name} ✦` });
+  } catch (error) {
+    setInlineError("join-error", error.message || "Couldn’t find that capsule.");
+  } finally {
+    appState.busy = false;
+  }
+}
+
+async function loadEventByCode(code, { replaceHistory = true } = {}) {
+  showToast("opening capsule...");
+  try {
+    const { event } = await api(`/api/events/join/${code}`);
+    await enterEvent(event, { replaceHistory });
+  } catch (error) {
+    appState.event = null; appState.memories = []; appState.memoryCount = 0; appState.screen = "landing";
+    window.history.replaceState({}, "", "/");
+    renderApp();
+    showToast(error.message || "Couldn’t find that capsule.");
+  }
+}
+
+async function showPulse() {
+  if (!appState.event || appState.busy) return;
+  appState.screen = "pulse";
+  appState.pulse = null;
+  renderApp();
+  showToast("reading the event pulse...");
+  try {
+    const { pulse } = await api(`/api/events/${appState.event.id}/pulse`);
+    appState.pulse = pulse;
+    appState.memoryCount = pulse.memoryCount;
+    renderApp();
+  } catch (error) {
+    showToast(error.message || "Event Pulse couldn’t be loaded.");
+  }
+}
+
+function validateDraft() {
+  const message = appState.message.trim();
+  if (!message) return "Write a short memory before continuing.";
+  if (message.length > MEMORY_MESSAGE_MAX_LENGTH) return `Keep your memory to ${MEMORY_MESSAGE_MAX_LENGTH} characters or fewer.`;
+  if (!appState.mood) return "Choose a mood for your memory.";
+  return "";
+}
+
+function moveToDrawing() {
+  const error = validateDraft();
+  setInlineError("memory-error", error);
+  if (error) return;
+  closeModal("add");
+  setTimeout(() => openModal("draw"), 80);
+}
+
+async function submitMemory({ skipDrawing = false } = {}) {
+  if (appState.busy || !appState.event) return;
+  const validationError = validateDraft();
+  if (validationError) { setInlineError("draw-error", validationError); return; }
   const drawLayer = document.querySelector('[data-modal="draw"]');
   const source = drawLayer?.querySelector(".custom-envelope");
   if (!source) return;
-  appState.isSubmitting = true;
+  setInlineError("draw-error");
+  appState.busy = true;
   drawLayer.querySelectorAll("[data-send]").forEach((button) => { button.disabled = true; });
-  const drawing = includeDrawing ? drawController?.exportDrawing() || null : null;
-  appState.drawing = drawing;
+  const sendLabel = drawLayer.querySelector('[data-send="true"] span:last-child');
+  if (sendLabel) sendLabel.textContent = "SENDING MEMORY...";
+  showToast("sending memory...");
+
+  try {
+    const drawing = !skipDrawing && drawController?.hasDrawing() ? await drawController.toBlob() : null;
+    const form = new FormData();
+    form.set("message", appState.message.trim());
+    form.set("emoji", appState.mood);
+    form.set("author", appState.author.trim());
+    form.set("envelopeColor", "cream");
+    if (appState.photoFile) form.set("image", appState.photoFile, appState.photoFile.name);
+    if (drawing) form.set("envelopeDrawing", drawing, "envelope-drawing.png");
+
+    const { memory, memoryCount } = await api(`/api/events/${appState.event.id}/memories`, { method: "POST", body: form });
+    appState.memories.push(memory);
+    appState.memoryCount = memoryCount;
+    appState.pulse = null;
+    animateSubmittedMemory(source, memory);
+  } catch (error) {
+    appState.busy = false;
+    drawLayer.querySelectorAll("[data-send]").forEach((button) => { button.disabled = false; });
+    if (sendLabel) sendLabel.textContent = "SEND TO CAPSULE";
+    setInlineError("draw-error", error.message || "Memory couldn’t be sent. Try again.");
+  }
+}
+
+function resetDraft() {
+  if (appState.photoPreview) URL.revokeObjectURL(appState.photoPreview);
+  appState.message = "";
+  appState.mood = moods[0].emoji;
+  appState.author = "";
+  appState.photoPreview = null;
+  appState.photoFile = null;
+  appState.busy = false;
+  drawController = null;
+}
+
+function animateSubmittedMemory(source, memory) {
   source.classList.add("is-sealing");
   const from = source.getBoundingClientRect();
   setTimeout(() => {
     closeModal("draw"); showScreen("event");
     const target = document.querySelector("#event-screen .capsule-window")?.getBoundingClientRect();
-    const flyer = document.createElement("div"); flyer.className = "flying-envelope";
-    flyer.innerHTML = drawing ? `<img class="flying-envelope-drawing" src="${esc(drawing)}" alt="" /><span>♄</span>` : `<span>♄</span>`;
+    const flyer = document.createElement("div"); flyer.className = "flying-envelope"; flyer.innerHTML = `<span>♄</span>`;
     flyer.style.left = `${from.left + from.width * .25}px`; flyer.style.top = `${from.top + from.height * .25}px`; document.body.appendChild(flyer);
     requestAnimationFrame(() => {
       const x = target ? target.left + target.width / 2 - (from.left + from.width * .25) : window.innerWidth / 2;
@@ -595,37 +1073,12 @@ function submitMemory(includeDrawing = true) {
         const stack = document.querySelector("#event-screen .envelope-stack");
         if (stack) {
           stack.classList.add("is-shifting");
-          const envelope = drawing
-            ? { color: "cream", drawing }
-            : { color: "coral", mark: "YOU", doodle: "✦", seal: "planet" };
-          stack.querySelector(".just-added")?.classList.remove("just-added");
-          stack.insertAdjacentHTML("beforeend", Envelope(envelope, stack.children.length, "just-added"));
-          const addedEnvelope = stack.lastElementChild;
-          setTimeout(() => {
-            stack.classList.remove("is-shifting");
-            addedEnvelope?.classList.remove("just-added");
-          }, 620);
+          if (!stack.querySelector(".just-added")) stack.insertAdjacentHTML("beforeend", Envelope(memoryEnvelope(memory), Math.min(stack.children.length, 9), "just-added"));
+          setTimeout(() => stack.classList.remove("is-shifting"), 620);
         }
-        const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date()).toUpperCase();
-        mockMemories.unshift({
-          id: `memory-${Date.now()}`,
-          scene: draftMemory.scene,
-          photo: appState.photo,
-          drawing,
-          message: appState.message.trim() || "A memory from today.",
-          author: appState.author.trim() || "Anonymous",
-          mood: appState.mood,
-          date,
-          relativeTime: "added just now",
-          envelopeColor: "coral",
-          stamp: "star",
-        });
-        appState.memoryCount += 1;
-        appState.memoryIndex = 0;
-        appState.isSubmitting = false;
-        drawLayer.querySelectorAll("[data-send]").forEach((button) => { button.disabled = false; });
         updateMemoryTotals();
-        showToast(appState.memoryCount >= event.memoryLimit ? "Memory added — the capsule is now full! ✦" : "Memory added to the capsule! ✦");
+        resetDraft();
+        showToast("Memory added to the capsule! ✦");
       }, 1220);
     });
     source.classList.remove("is-sealing");
@@ -637,7 +1090,7 @@ function setupDrawingCanvas() {
   const canvas = document.querySelector("#drawing-canvas");
   if (!canvas || canvas.dataset.ready === "true") return;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  let tool = "pencil"; let color = "#2357d8"; let drawing = false; let last = null; const history = [];
+  let tool = "pencil"; let color = "#2357d8"; let drawing = false; let last = null; let hasInk = false; const history = [];
   const resize = () => {
     const rect = canvas.getBoundingClientRect(); const ratio = Math.min(window.devicePixelRatio || 1, 2);
     if (!rect.width || !rect.height) return;
@@ -647,27 +1100,22 @@ function setupDrawingCanvas() {
   };
   resize(); window.addEventListener("resize", resize);
   const point = (event) => { const rect = canvas.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; };
-  const snapshot = () => { history.push(canvas.toDataURL()); if (history.length > 14) history.shift(); };
-  const restore = (url) => { ctx.clearRect(0, 0, canvas.width, canvas.height); if (!url) return; const image = new Image(); image.onload = () => ctx.drawImage(image, 0, 0, canvas.clientWidth, canvas.clientHeight); image.src = url; };
+  const snapshot = () => { history.push({ url: canvas.toDataURL(), hasInk }); if (history.length > 14) history.shift(); };
+  const restore = (state) => { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = Boolean(state?.hasInk); if (!state?.url) return; const image = new Image(); image.onload = () => ctx.drawImage(image, 0, 0, canvas.clientWidth, canvas.clientHeight); image.src = state.url; };
   canvas.addEventListener("pointerdown", (event) => { snapshot(); drawing = true; last = point(event); canvas.setPointerCapture(event.pointerId); event.preventDefault(); });
   canvas.addEventListener("pointermove", (event) => {
     if (!drawing) return; const next = point(event); ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
     if (tool === "eraser") { ctx.globalCompositeOperation = "destination-out"; ctx.lineWidth = 26; }
     else { ctx.globalCompositeOperation = "source-over"; ctx.strokeStyle = color; ctx.lineWidth = tool === "marker" ? 14 : 4; ctx.globalAlpha = tool === "marker" ? .62 : .92; }
-    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(next.x, next.y); ctx.stroke(); ctx.restore(); last = next;
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(next.x, next.y); ctx.stroke(); ctx.restore(); last = next; hasInk = true;
   });
   const stop = () => { drawing = false; last = null; };
   canvas.addEventListener("pointerup", stop); canvas.addEventListener("pointercancel", stop);
   drawController = {
     setTool(next) { tool = next; }, setColor(next) { color = next; },
-    undo() { restore(history.pop()); }, clear() { snapshot(); ctx.clearRect(0, 0, canvas.width, canvas.height); },
-    exportDrawing() {
-      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      for (let index = 3; index < pixels.length; index += 4) {
-        if (pixels[index] !== 0) return canvas.toDataURL("image/png");
-      }
-      return null;
-    },
+    undo() { restore(history.pop()); }, clear() { snapshot(); ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; },
+    hasDrawing() { return hasInk; },
+    toBlob() { return new Promise((resolve) => canvas.toBlob(resolve, "image/png")); },
   };
   canvas.dataset.ready = "true";
 }
@@ -686,26 +1134,47 @@ function drawPulseChart() {
     ctx.quadraticCurveTo(w * .49, bottom - 1 + jy, right, bottom + 1 + jy);
     ctx.stroke();
   });
+  const timeline = (appState.pulse?.timeline || []).slice(-12);
+  const series = timeline.length ? timeline : [{ bucket: null, count: 0 }];
+  const maxValue = Math.max(5, ...series.map((item) => item.count));
+  const xStep = (right - left) / Math.max(1, series.length - 1);
+  const labelEvery = Math.max(1, Math.ceil(series.length / 5));
+  const peakIndex = series.reduce((best, item, index) => item.count > series[best].count ? index : best, 0);
   ctx.globalAlpha = 1; ctx.font = "17px 'Patrick Hand', cursive"; ctx.fillStyle = "#171717"; ctx.textAlign = "center";
-  mockPulseData.timelineLabels.forEach((label, i) => { const x = left + i * ((right - left) / 9); ctx.beginPath(); ctx.moveTo(x, bottom - 4); ctx.lineTo(x + (i % 2 ? 1.5 : -1.5), bottom + 6); ctx.stroke(); if (label) { ctx.save(); ctx.translate(x, h - 7); ctx.rotate((i % 3 - 1) * .018); ctx.fillText(label, 0, 0); ctx.restore(); } });
-  [0, 15, 30, 45, 60, 75].forEach((value, i) => { const y = bottom - value / 75 * (bottom - top); ctx.textAlign = "right"; ctx.fillText(String(value), left - 10, y + 5); ctx.beginPath(); ctx.moveTo(left - 4, y); ctx.lineTo(left + 4, y + (i % 2 ? 1 : -1)); ctx.stroke(); });
-  const points = mockPulseData.timeline.map((value, i) => ({ x: left + i * ((right - left) / 9), y: bottom - value / 75 * (bottom - top) }));
+  series.forEach((item, i) => {
+    const x = series.length === 1 ? (left + right) / 2 : left + i * xStep;
+    ctx.beginPath(); ctx.moveTo(x, bottom - 4); ctx.lineTo(x + (i % 2 ? 1.5 : -1.5), bottom + 6); ctx.stroke();
+    if (item.bucket && (i % labelEvery === 0 || i === series.length - 1)) {
+      const label = new Date(item.bucket).toLocaleTimeString([], { hour: "numeric" });
+      ctx.save(); ctx.translate(x, h - 7); ctx.rotate((i % 3 - 1) * .018); ctx.fillText(label, 0, 0); ctx.restore();
+    }
+  });
+  Array.from({ length: 6 }, (_, index) => Math.round(maxValue * index / 5)).forEach((value, i) => { const y = bottom - value / maxValue * (bottom - top); ctx.textAlign = "right"; ctx.fillText(String(value), left - 10, y + 5); ctx.beginPath(); ctx.moveTo(left - 4, y); ctx.lineTo(left + 4, y + (i % 2 ? 1 : -1)); ctx.stroke(); });
+  const points = series.map((item, i) => ({ x: series.length === 1 ? (left + right) / 2 : left + i * xStep, y: bottom - item.count / maxValue * (bottom - top) }));
   for (let pass = 0; pass < 3; pass++) { ctx.beginPath(); ctx.strokeStyle = pass === 0 ? "#1746be" : pass === 1 ? "rgba(35,87,216,.48)" : "rgba(77,113,224,.3)"; ctx.lineWidth = pass === 0 ? 4.2 : pass === 1 ? 1.6 : .8; points.forEach((p, i) => i ? ctx.lineTo(p.x + pass * .8, p.y + (pass ? (i % 2 ? 1.4 : -1) : 0)) : ctx.moveTo(p.x, p.y)); ctx.stroke(); }
-  points.forEach((p, i) => { ctx.fillStyle = i === 6 ? "#f25a47" : "#1746be"; ctx.strokeStyle = "#171717"; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.arc(p.x, p.y, i === 6 ? 6.5 : 4.7, .08, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+  points.forEach((p, i) => { ctx.fillStyle = i === peakIndex ? "#f25a47" : "#1746be"; ctx.strokeStyle = "#171717"; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.arc(p.x, p.y, i === peakIndex ? 6.5 : 4.7, .08, Math.PI * 2); ctx.fill(); ctx.stroke(); });
 }
 
 function bindInteractions() {
-  document.addEventListener("click", (eventTarget) => {
+  app.addEventListener("click", (eventTarget) => {
     const nav = eventTarget.target.closest("[data-nav]");
-    if (nav) { showScreen(nav.dataset.nav); if (nav.dataset.created) showToast("Mock capsule created — welcome in!"); }
-    const opener = eventTarget.target.closest("[data-open]"); if (opener) openModal(opener.dataset.open);
+    if (nav) nav.dataset.nav === "pulse" ? showPulse() : showScreen(nav.dataset.nav);
+    const capacity = eventTarget.target.closest("[data-setup-capacity]");
+    if (capacity) { appState.capsuleDraft.capacity = Number(capacity.dataset.setupCapacity); updateCapsuleSetupPreview(); }
+    const accent = eventTarget.target.closest("[data-setup-accent]");
+    if (accent) { appState.capsuleDraft.accentColor = accent.dataset.setupAccent; updateCapsuleSetupPreview(); }
+    const sticker = eventTarget.target.closest("[data-setup-sticker]");
+    if (sticker) { appState.capsuleDraft.sticker = sticker.dataset.setupSticker; updateCapsuleSetupPreview(); }
+    if (eventTarget.target.closest("[data-surprise]")) surpriseCapsule();
+    const opener = eventTarget.target.closest("[data-open]");
+    if (opener) openModal(opener.dataset.open);
     const closer = eventTarget.target.closest("[data-close]"); if (closer) closeModal(closer.dataset.close);
     const mood = eventTarget.target.closest("[data-mood]"); if (mood) { appState.mood = mood.dataset.mood; updatePreviews(); }
-    const next = eventTarget.target.closest("[data-next]"); if (next) { closeModal("add"); setTimeout(() => openModal("draw"), 80); }
+    const next = eventTarget.target.closest("[data-next]"); if (next) moveToDrawing();
     const memNav = eventTarget.target.closest("[data-memory-nav]"); if (memNav) refreshMemoryCard(Number(memNav.dataset.memoryNav));
     const ripEnvelope = eventTarget.target.closest("[data-rip-memory]"); if (ripEnvelope) ripMemoryEnvelope();
     const copy = eventTarget.target.closest("[data-copy]"); if (copy) copyValue(copy.dataset.copy);
-    const send = eventTarget.target.closest("[data-send]"); if (send) submitMemory(send.dataset.send === "drawing");
+    const send = eventTarget.target.closest("[data-send]"); if (send) submitMemory({ skipDrawing: send.dataset.skipDrawing === "true" });
     const toolButton = eventTarget.target.closest("[data-tool]");
     if (toolButton) {
       const tool = toolButton.dataset.tool;
@@ -714,16 +1183,36 @@ function bindInteractions() {
     const colorButton = eventTarget.target.closest("[data-color]");
     if (colorButton) { drawController?.setColor(colorButton.dataset.color); document.querySelectorAll(".draw-color").forEach((button) => button.classList.toggle("is-active", button === colorButton)); }
   });
-  document.querySelector("#join-form")?.addEventListener("submit", (submitEvent) => { submitEvent.preventDefault(); showScreen("event"); showToast("Joined SummerHacks 2026 ✦"); });
-  document.querySelector("#memory-author")?.addEventListener("input", (inputEvent) => { appState.author = inputEvent.target.value; updatePreviews(); });
-  document.querySelector("#memory-message")?.addEventListener("input", (inputEvent) => {
-    appState.message = inputEvent.target.value.slice(0, MEMORY_MESSAGE_MAX_LENGTH);
-    inputEvent.target.value = appState.message;
-    updatePreviews();
+  app.addEventListener("submit", (submitEvent) => {
+    if (submitEvent.target.matches("#capsule-setup-form")) { submitEvent.preventDefault(); createFrontendCapsule(); return; }
+    if (submitEvent.target.matches("#join-form")) { submitEvent.preventDefault(); joinCapsule(submitEvent.target); }
   });
-  document.querySelector("#photo-input")?.addEventListener("change", (inputEvent) => {
-    const file = inputEvent.target.files?.[0]; if (!file) return; const reader = new FileReader();
-    reader.onload = () => { appState.photo = reader.result; updatePreviews(); showToast("Photo preview updated locally"); }; reader.readAsDataURL(file);
+  app.addEventListener("input", (inputEvent) => {
+    if (inputEvent.target.matches("#memory-author")) { appState.author = inputEvent.target.value.slice(0, 9); inputEvent.target.value = appState.author; updatePreviews(); }
+    if (inputEvent.target.matches("#memory-message")) { appState.message = inputEvent.target.value.slice(0, MEMORY_MESSAGE_MAX_LENGTH); inputEvent.target.value = appState.message; updatePreviews(); }
+    if (inputEvent.target.form?.matches("#capsule-setup-form") && ["name", "startDate", "endDate", "description"].includes(inputEvent.target.name)) {
+      appState.capsuleDraft[inputEvent.target.name] = inputEvent.target.value;
+      updateCapsuleSetupPreview();
+    }
+    if (inputEvent.target.matches("#invite-code")) {
+      const digits = inputEvent.target.value.replace(/\D/g, "").slice(0, 6);
+      inputEvent.target.value = inviteDisplay(digits);
+      setInlineError("join-error");
+    }
+  });
+  app.addEventListener("change", (inputEvent) => {
+    if (inputEvent.target.form?.matches("#capsule-setup-form") && ["startDate", "endDate"].includes(inputEvent.target.name)) {
+      appState.capsuleDraft[inputEvent.target.name] = inputEvent.target.value;
+      updateCapsuleSetupPreview();
+    }
+    if (!inputEvent.target.matches("#photo-input")) return;
+    const file = inputEvent.target.files?.[0]; if (!file) return;
+    if (!ALLOWED_IMAGE_TYPES.has(file.type)) { setInlineError("memory-error", "Choose a JPEG, PNG, WebP, or GIF image."); inputEvent.target.value = ""; return; }
+    if (file.size > MAX_IMAGE_SIZE) { setInlineError("memory-error", "Image must be 8 MB or smaller."); inputEvent.target.value = ""; return; }
+    if (appState.photoPreview) URL.revokeObjectURL(appState.photoPreview);
+    appState.photoFile = file;
+    appState.photoPreview = URL.createObjectURL(file);
+    setInlineError("memory-error"); updatePreviews(); showToast("Photo ready to send ✦");
   });
 }
 
@@ -735,4 +1224,13 @@ document.addEventListener("keydown", (eventTarget) => {
 
 window.addEventListener("resize", () => { if (appState.screen === "pulse") drawPulseChart(); });
 
+window.addEventListener("popstate", () => {
+  const code = window.location.pathname.slice(1);
+  if (/^\d{6}$/.test(code)) loadEventByCode(code);
+  else { appState.screen = "landing"; appState.event = null; appState.memories = []; appState.memoryCount = 0; renderApp(); }
+});
+
 renderApp();
+bindInteractions();
+const initialInviteCode = window.location.pathname.slice(1);
+if (/^\d{6}$/.test(initialInviteCode)) loadEventByCode(initialInviteCode);

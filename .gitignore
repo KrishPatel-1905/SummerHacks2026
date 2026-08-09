@@ -1,2 +1,7 @@
 .DS_Store
 exec-*.png
+node_modules/
+.env
+.env.local
+uploads/
+npm-debug.log*
