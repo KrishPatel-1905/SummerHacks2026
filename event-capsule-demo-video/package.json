@@ -1,0 +1,19 @@
+{
+  "name": "event-capsule-demo-video",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reproducible Event Capsule hackathon demo video masters.",
+  "scripts": {
+    "music": "node source/generate-music.mjs",
+    "render:voice": "remotion render source/index.jsx EventCapsuleVoiceover deliverables/event-capsule-voiceover.mp4 --public-dir=source/public --codec=h264 --crf=18",
+    "render:captions": "remotion render source/index.jsx EventCapsuleCaptions deliverables/event-capsule-music-captions.mp4 --public-dir=source/public --codec=h264 --crf=18",
+    "render": "npm run render:voice && npm run render:captions"
+  },
+  "devDependencies": {
+    "@remotion/cli": "^4.0.507",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "remotion": "^4.0.507"
+  }
+}
