@@ -6,8 +6,10 @@ Self-contained Remotion project and rendered 65-second hackathon ad variants. Th
 
 - `deliverables/event-capsule-voiceover.mp4` — conversational AI voiceover, original music, and captions.
 - `deliverables/event-capsule-music-captions.mp4` — original music and captions without narration.
+- `deliverables/event-capsule-voiceover-mobile.mp4` — 9:16 mobile voiceover version.
+- `deliverables/event-capsule-music-captions-mobile.mp4` — 9:16 mobile music-and-captions version.
 
-Both masters are 1920×1080, 30 fps, H.264 video with stereo AAC audio.
+Desktop masters are 1920×1080; mobile masters are 1080×1920. All exports are 30 fps H.264 video with stereo AAC audio.
 
 ## Re-render
 

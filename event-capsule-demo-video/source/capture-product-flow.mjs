@@ -16,6 +16,54 @@ const context = await browser.newContext({
 });
 const page = await context.newPage();
 
+const demoPulse = {
+  memoryCount: 24,
+  analyzedMemoryCount: 24,
+  pendingAnalysisCount: 0,
+  failedAnalysisCount: 0,
+  analysisCoverage: 100,
+  timezone: 'America/Toronto',
+  moods: [
+    {label: 'excited', count: 8, percentage: 33},
+    {label: 'happy', count: 6, percentage: 25},
+    {label: 'emotional', count: 4, percentage: 17},
+    {label: 'determined', count: 4, percentage: 17},
+    {label: 'loved', count: 2, percentage: 8},
+  ],
+  themes: [
+    {label: 'friendship', count: 14},
+    {label: 'achievement', count: 11},
+    {label: 'coding', count: 9},
+    {label: 'creativity', count: 8},
+    {label: 'celebration', count: 7},
+    {label: 'teamwork', count: 6},
+  ],
+  visualTags: [
+    {label: 'photos', count: 18},
+    {label: 'drawings', count: 12},
+    {label: 'messages', count: 10},
+    {label: 'postcards', count: 8},
+  ],
+  timeline: [
+    {bucket: '2026-08-09T14:00:00.000Z', count: 1},
+    {bucket: '2026-08-09T15:00:00.000Z', count: 2},
+    {bucket: '2026-08-09T16:00:00.000Z', count: 3},
+    {bucket: '2026-08-09T17:00:00.000Z', count: 2},
+    {bucket: '2026-08-09T18:00:00.000Z', count: 5},
+    {bucket: '2026-08-09T19:00:00.000Z', count: 4},
+    {bucket: '2026-08-09T20:00:00.000Z', count: 6},
+    {bucket: '2026-08-09T21:00:00.000Z', count: 1},
+  ],
+  peak: {bucket: '2026-08-09T20:00:00.000Z', count: 6},
+  story: 'The room buzzed with excitement as friends built, created, and celebrated together. Teamwork carried the night, while photos, sketches, and heartfelt messages captured every perspective.',
+};
+
+await page.route(/\/api\/v1\/events\/[^/]+\/pulse(?:\?.*)?$/, (route) => route.fulfill({
+  status: 200,
+  contentType: 'application/json',
+  body: JSON.stringify({pulse: demoPulse}),
+}));
+
 await page.addInitScript(() => {
   window.addEventListener('DOMContentLoaded', () => {
     const cursor = document.createElement('div');
@@ -101,8 +149,9 @@ await click(page.locator('.draw-modal [data-send="true"]').first(), 2600);
 await click(page.locator('[data-open="viewer"]'), 1400);
 await click(page.locator('[data-rip-memory]'), 2200);
 await click(page.locator('.viewer-close[data-close="viewer"]'), 800);
-await click(page.locator('[data-nav="pulse"]'), 2400);
-await wait(1800);
+await click(page.locator('[data-nav="pulse"]'), 1000);
+await page.evaluate(() => document.querySelector('#toast')?.classList.remove('is-visible'));
+await wait(3200);
 
 const video = page.video();
 await context.close();

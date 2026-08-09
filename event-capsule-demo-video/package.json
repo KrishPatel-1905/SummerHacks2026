@@ -9,7 +9,10 @@
     "capture": "node source/capture-product-flow.mjs",
     "render:voice": "remotion render source/index.jsx EventCapsuleVoiceover deliverables/event-capsule-voiceover.mp4 --public-dir=source/public --codec=h264 --crf=18",
     "render:captions": "remotion render source/index.jsx EventCapsuleCaptions deliverables/event-capsule-music-captions.mp4 --public-dir=source/public --codec=h264 --crf=18",
-    "render": "npm run render:voice && npm run render:captions"
+    "render:mobile:voice": "remotion render source/index.jsx EventCapsuleVoiceoverMobile deliverables/event-capsule-voiceover-mobile.mp4 --public-dir=source/public --codec=h264 --crf=20",
+    "render:mobile:captions": "remotion render source/index.jsx EventCapsuleCaptionsMobile deliverables/event-capsule-music-captions-mobile.mp4 --public-dir=source/public --codec=h264 --crf=20",
+    "render": "npm run render:voice && npm run render:captions",
+    "render:mobile": "npm run render:mobile:voice && npm run render:mobile:captions"
   },
   "devDependencies": {
     "@remotion/cli": "^4.0.507",
