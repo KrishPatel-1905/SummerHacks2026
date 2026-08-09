@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { Event } from "../models/Event.js";
 import { Memory } from "../models/Memory.js";
 
@@ -11,6 +11,14 @@ export function normalizeInviteCode(value = "") {
 
 function generateInviteCode() {
   return String(randomInt(100_000, 1_000_000));
+}
+
+function generateOwnerToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function hashOwnerToken(token) {
+  return createHash("sha256").update(String(token)).digest("hex");
 }
 
 export function serializeEvent(event, memoryCount = event.memoryCount ?? 0) {
@@ -25,22 +33,26 @@ export function serializeEvent(event, memoryCount = event.memoryCount ?? 0) {
     accentColor: event.accentColor,
     sticker: event.sticker,
     inviteCode: event.inviteCode,
+    status: event.status || "open",
+    submissionsOpenAt: event.submissionsOpenAt,
+    submissionsCloseAt: event.submissionsCloseAt,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
     memoryCount,
   };
 }
 
-export function serializeMemory(memory) {
+export function serializeMemory(memory, capsuleCode = null) {
+  const protectedUrl = (url) => url && capsuleCode ? `${url}?code=${encodeURIComponent(capsuleCode)}` : url;
   return {
     id: String(memory._id),
     eventId: String(memory.eventId),
-    imageUrl: memory.imageUrl,
+    imageUrl: protectedUrl(memory.imageUrl),
     message: memory.message,
     author: memory.author,
     emoji: memory.emoji,
     envelopeColor: memory.envelopeColor,
-    envelopeDrawing: memory.envelopeDrawing,
+    envelopeDrawing: protectedUrl(memory.envelopeDrawing),
     analysisStatus: memory.analysisStatus,
     analysis: memory.analysis,
     analysisVersion: memory.analysisVersion,
@@ -59,12 +71,15 @@ export async function createEvent({
   capacity = 100,
   accentColor = "blue",
   sticker = "star",
+  submissionsOpenAt = null,
+  submissionsCloseAt = null,
 }) {
   const normalizedName = typeof name === "string" ? name.trim() : "";
   const normalizedDescription = typeof description === "string" ? description.trim() : "";
 
   for (let attempt = 0; attempt < MAX_INVITE_ATTEMPTS; attempt += 1) {
     try {
+      const ownerToken = generateOwnerToken();
       const event = await Event.create({
         name: normalizedName,
         description: normalizedDescription,
@@ -75,8 +90,12 @@ export async function createEvent({
         accentColor,
         sticker,
         inviteCode: generateInviteCode(),
+        ownerTokenHash: hashOwnerToken(ownerToken),
+        status: "open",
+        submissionsOpenAt,
+        submissionsCloseAt,
       });
-      return serializeEvent(event, 0);
+      return { event: serializeEvent(event, 0), ownerToken };
     } catch (error) {
       if (error?.code !== 11000) throw error;
     }
@@ -100,6 +119,28 @@ export async function getEventByInviteCode(value) {
   return serializeEvent(event);
 }
 
+export async function verifyEventOwner(eventId, token) {
+  if (!mongoose.isValidObjectId(eventId) || typeof token !== "string" || !token) return null;
+  const event = await Event.findById(eventId).select("+ownerTokenHash");
+  if (!event?.ownerTokenHash) return null;
+  const expected = Buffer.from(event.ownerTokenHash, "hex");
+  const received = Buffer.from(hashOwnerToken(token), "hex");
+  return expected.length === received.length && timingSafeEqual(expected, received) ? event : null;
+}
+
+export async function rotateEventInviteCode(eventId) {
+  for (let attempt = 0; attempt < MAX_INVITE_ATTEMPTS; attempt += 1) {
+    try {
+      const event = await Event.findByIdAndUpdate(eventId, { $set: { inviteCode: generateInviteCode() } }, { new: true, runValidators: true });
+      if (!event) return null;
+      return serializeEvent(event);
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+    }
+  }
+  throw Object.assign(new Error("Could not generate a unique invite code. Try again."), { status: 503 });
+}
+
 export async function reconcileEventMemoryCounts() {
   const counts = await Memory.aggregate([
     { $group: { _id: "$eventId", count: { $sum: 1 } } },
@@ -115,5 +156,7 @@ export async function reconcileEventMemoryCounts() {
       },
     }));
   if (updates.length) await Event.bulkWrite(updates);
+  await Event.updateMany({ status: { $exists: false } }, { $set: { status: "open" } });
+  await Event.updateMany({ timezone: { $exists: false } }, { $set: { timezone: "UTC" } });
   return updates.length;
 }

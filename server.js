@@ -4,10 +4,9 @@ import { connectToDatabase, disconnectFromDatabase } from "./server/config/db.js
 import { readServerConfig } from "./server/config/env.js";
 import { reconcileEventMemoryCounts } from "./server/services/eventService.js";
 
-const { port, publicAppUrl } = readServerConfig();
-if (publicAppUrl) process.env.PUBLIC_APP_URL = publicAppUrl;
-
 try {
+  const { port, publicAppUrl } = readServerConfig();
+  if (publicAppUrl) process.env.PUBLIC_APP_URL = publicAppUrl;
   await connectToDatabase();
   const reconciledEvents = await reconcileEventMemoryCounts();
   const app = createApp();

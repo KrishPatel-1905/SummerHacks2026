@@ -42,7 +42,10 @@ const memorySchema = new mongoose.Schema({
     type: String,
     required: [true, "Mood emoji is required."],
     trim: true,
-    maxlength: [16, "Mood emoji is too long."],
+    enum: {
+      values: ["🙂", "🥹", "😭", "🤯", "😴", "❤️", "😤", "🥳"],
+      message: "Choose one of the supported moods.",
+    },
   },
   envelopeColor: {
     type: String,

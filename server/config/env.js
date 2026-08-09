@@ -1,6 +1,7 @@
 export function readServerConfig(environment = process.env) {
   const mongoUri = environment.MONGODB_URI?.trim();
   if (!mongoUri) throw new Error("MONGODB_URI is required.");
+  if (!/^mongodb(?:\+srv)?:\/\//.test(mongoUri)) throw new Error("MONGODB_URI must be a valid MongoDB connection string.");
 
   const port = Number(environment.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -16,5 +17,18 @@ export function readServerConfig(environment = process.env) {
     }
   }
 
-  return { mongoUri, port, publicAppUrl };
+  const nodeEnv = environment.NODE_ENV || "development";
+  if (!["development", "test", "production"].includes(nodeEnv)) throw new Error("NODE_ENV must be development, test, or production.");
+  if (nodeEnv === "production" && !publicAppUrl) throw new Error("PUBLIC_APP_URL is required in production.");
+
+  const uploadStorage = environment.UPLOAD_STORAGE || "gridfs";
+  if (!["gridfs", "local"].includes(uploadStorage)) throw new Error("UPLOAD_STORAGE must be gridfs or local.");
+
+  const trustProxy = environment.TRUST_PROXY === "true"
+    ? true
+    : /^\d+$/.test(environment.TRUST_PROXY || "")
+      ? Number(environment.TRUST_PROXY)
+      : false;
+
+  return { mongoUri, port, publicAppUrl, nodeEnv, uploadStorage, trustProxy };
 }

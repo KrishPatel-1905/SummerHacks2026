@@ -7,12 +7,17 @@ import { Memory } from "../models/Memory.js";
 import { imageStorage } from "../storage/index.js";
 import { createRateLimit } from "../middleware/rateLimit.js";
 import { analyzeMemory, analyzePendingMemories } from "../services/analysisService.js";
+import { validateImageFile } from "../services/imageValidation.js";
+import { publishEventUpdate, subscribeToEvent } from "../services/eventStream.js";
 import {
   createEvent,
   getEventById,
   getEventByInviteCode,
   normalizeInviteCode,
+  rotateEventInviteCode,
+  serializeEvent,
   serializeMemory,
+  verifyEventOwner,
 } from "../services/eventService.js";
 import { getEventPulseData } from "../services/pulseService.js";
 
@@ -21,6 +26,7 @@ const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "i
 const createLimiter = createRateLimit({ windowMs: 15 * 60_000, max: 30, message: "Too many capsules created. Try again later." });
 const joinLimiter = createRateLimit({ windowMs: 10 * 60_000, max: 40, message: "Too many code attempts. Try again later." });
 const memoryLimiter = createRateLimit({ windowMs: 60_000, max: 30, message: "Too many memories submitted. Slow down for a moment." });
+const streamLimiter = createRateLimit({ windowMs: 60_000, max: 12, message: "Too many live connections. Try again shortly." });
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -43,9 +49,27 @@ function requireEventId(request, response, next) {
   next();
 }
 
+async function requireEventOwner(request, response, next) {
+  const token = request.get("x-owner-token");
+  if (!token) return response.status(401).json({ error: "Owner token is required." });
+  const event = await verifyEventOwner(request.params.eventId, token);
+  if (!event) return response.status(403).json({ error: "Owner token is invalid." });
+  request.ownerEvent = event;
+  next();
+}
+
+async function requireCapsuleAccess(request, response, next) {
+  const event = await Event.findById(request.params.eventId).select("inviteCode");
+  if (!event) return response.status(404).json({ error: "Couldn’t find that capsule." });
+  const code = normalizeInviteCode(request.get("x-capsule-code") || request.query.code);
+  if (code !== event.inviteCode) return response.status(403).json({ error: "Capsule code is invalid." });
+  request.capsuleEvent = event;
+  next();
+}
+
 router.post("/", createLimiter, async (request, response) => {
-  const event = await createEvent(request.body ?? {});
-  response.status(201).json({ event });
+  const { event, ownerToken } = await createEvent(request.body ?? {});
+  response.status(201).json({ event, ownerToken });
 });
 
 router.get("/join/:inviteCode", joinLimiter, async (request, response) => {
@@ -56,44 +80,113 @@ router.get("/join/:inviteCode", joinLimiter, async (request, response) => {
   response.json({ event });
 });
 
-router.get("/:eventId", requireEventId, async (request, response) => {
+router.patch("/:eventId", requireEventId, requireEventOwner, async (request, response) => {
+  const allowed = ["name", "description", "startDate", "endDate", "timezone", "capacity", "accentColor", "sticker", "status", "submissionsOpenAt", "submissionsCloseAt"];
+  for (const key of allowed) {
+    if (Object.hasOwn(request.body ?? {}, key)) request.ownerEvent.set(key, request.body[key]);
+  }
+  await request.ownerEvent.save();
+  const event = serializeEvent(request.ownerEvent);
+  publishEventUpdate(request.params.eventId, "event-updated", { event });
+  response.json({ event });
+});
+
+router.post("/:eventId/code", requireEventId, requireEventOwner, async (request, response) => {
+  const event = await rotateEventInviteCode(request.params.eventId);
+  publishEventUpdate(request.params.eventId, "code-rotated", { event });
+  response.json({ event });
+});
+
+router.delete("/:eventId/memories/:memoryId", requireEventId, requireEventOwner, async (request, response) => {
+  if (!mongoose.isValidObjectId(request.params.memoryId)) return response.status(400).json({ error: "Invalid memory id." });
+  const memory = await Memory.findOneAndDelete({ _id: request.params.memoryId, eventId: request.params.eventId });
+  if (!memory) return response.status(404).json({ error: "Couldn’t find that memory." });
+  await Promise.all([imageStorage.remove(memory.imageUrl), imageStorage.remove(memory.envelopeDrawing)]);
+  await Event.updateOne({ _id: request.params.eventId, memoryCount: { $gt: 0 } }, { $inc: { memoryCount: -1 } });
+  publishEventUpdate(request.params.eventId, "memory-removed", { memoryId: String(memory._id) });
+  response.status(204).end();
+});
+
+router.delete("/:eventId", requireEventId, requireEventOwner, async (request, response) => {
+  const memories = await Memory.find({ eventId: request.params.eventId }).select("imageUrl envelopeDrawing");
+  await Promise.all(memories.flatMap((memory) => [imageStorage.remove(memory.imageUrl), imageStorage.remove(memory.envelopeDrawing)]));
+  await Promise.all([
+    Memory.deleteMany({ eventId: request.params.eventId }),
+    Event.deleteOne({ _id: request.params.eventId }),
+  ]);
+  publishEventUpdate(request.params.eventId, "event-deleted");
+  response.status(204).end();
+});
+
+router.get("/:eventId/stream", requireEventId, streamLimiter, requireCapsuleAccess, async (request, response) => {
+  response.status(200);
+  response.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  response.flushHeaders();
+
+  const send = (message) => response.write(`data: ${JSON.stringify(message)}\n\n`);
+  send({ type: "connected", data: {}, sentAt: new Date().toISOString() });
+  const unsubscribe = subscribeToEvent(request.params.eventId, send);
+  const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 25_000);
+  request.once("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+});
+
+router.get("/:eventId", requireEventId, requireCapsuleAccess, async (request, response) => {
   const event = await getEventById(request.params.eventId);
   if (!event) return response.status(404).json({ error: "Couldn’t find that capsule." });
   response.json({ event });
 });
 
-router.get("/:eventId/memories", requireEventId, async (request, response) => {
+router.get("/:eventId/memories", requireEventId, requireCapsuleAccess, async (request, response) => {
   const exists = await Event.exists({ _id: request.params.eventId });
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
   const memories = await Memory.find({ eventId: request.params.eventId }).sort({ createdAt: 1 });
-  response.json({ memories: memories.map(serializeMemory) });
+  response.json({ memories: memories.map((memory) => serializeMemory(memory, request.capsuleEvent.inviteCode)) });
 });
 
-router.get("/:eventId/memories/random", requireEventId, async (request, response) => {
+router.get("/:eventId/memories/random", requireEventId, requireCapsuleAccess, async (request, response) => {
   const [memory] = await Memory.aggregate([
     { $match: { eventId: new mongoose.Types.ObjectId(request.params.eventId) } },
     { $sample: { size: 1 } },
   ]);
   if (!memory) return response.status(404).json({ error: "No memories have been sent yet." });
-  response.json({ memory: serializeMemory(memory) });
+  response.json({ memory: serializeMemory(memory, request.capsuleEvent.inviteCode) });
 });
 
-router.post("/:eventId/memories", requireEventId, memoryLimiter, upload, async (request, response) => {
+router.post("/:eventId/memories", requireEventId, memoryLimiter, requireCapsuleAccess, upload, async (request, response) => {
   const image = request.files?.image?.[0];
   const drawing = request.files?.envelopeDrawing?.[0];
+  validateImageFile(image);
+  validateImageFile(drawing, { pngOnly: true });
   if (drawing && drawing.size > 2 * 1024 * 1024) {
     return response.status(413).json({ error: "Envelope drawing is too large." });
   }
 
+  const now = new Date();
   const event = await Event.findOneAndUpdate({
     _id: request.params.eventId,
+    status: "open",
+    $and: [
+      { $or: [{ submissionsOpenAt: null }, { submissionsOpenAt: { $lte: now } }] },
+      { $or: [{ submissionsCloseAt: null }, { submissionsCloseAt: { $gt: now } }] },
+    ],
     $expr: { $lt: [{ $ifNull: ["$memoryCount", 0] }, "$capacity"] },
   }, {
     $inc: { memoryCount: 1 },
   }, { new: true }).select("capacity memoryCount");
   if (!event) {
-    const exists = await Event.exists({ _id: request.params.eventId });
-    return response.status(exists ? 409 : 404).json({ error: exists ? "This capsule is full." : "Couldn’t find that capsule." });
+    const current = await Event.findById(request.params.eventId).select("status submissionsOpenAt submissionsCloseAt memoryCount capacity");
+    if (!current) return response.status(404).json({ error: "Couldn’t find that capsule." });
+    if (current.status !== "open") return response.status(423).json({ error: "This capsule is not accepting memories." });
+    if (current.submissionsOpenAt && current.submissionsOpenAt > now) return response.status(423).json({ error: "This capsule is not open yet." });
+    if (current.submissionsCloseAt && current.submissionsCloseAt <= now) return response.status(423).json({ error: "This capsule is closed." });
+    return response.status(409).json({ error: "This capsule is full." });
   }
 
   const savedUrls = [];
@@ -122,7 +215,9 @@ router.post("/:eventId/memories", requireEventId, memoryLimiter, upload, async (
       analysisVersion: "deterministic-v1",
       analyzedAt: new Date(),
     });
-    response.status(201).json({ memory: serializeMemory(memory), memoryCount: event.memoryCount });
+    const serializedMemory = serializeMemory(memory, request.capsuleEvent.inviteCode);
+    publishEventUpdate(request.params.eventId, "memory-added", { memory: serializedMemory, memoryCount: event.memoryCount });
+    response.status(201).json({ memory: serializedMemory, memoryCount: event.memoryCount });
   } catch (error) {
     await Promise.all(savedUrls.map((url) => imageStorage.remove(url)));
     await Event.updateOne({ _id: request.params.eventId, memoryCount: { $gt: 0 } }, { $inc: { memoryCount: -1 } });
@@ -130,14 +225,16 @@ router.post("/:eventId/memories", requireEventId, memoryLimiter, upload, async (
   }
 });
 
-router.get("/:eventId/pulse", requireEventId, async (request, response) => {
+router.get("/:eventId/pulse", requireEventId, requireCapsuleAccess, async (request, response) => {
   const exists = await Event.exists({ _id: request.params.eventId });
   if (!exists) return response.status(404).json({ error: "Couldn’t find that capsule." });
   await analyzePendingMemories(request.params.eventId);
-  response.json({ pulse: await getEventPulseData(request.params.eventId) });
+  const pulse = await getEventPulseData(request.params.eventId);
+  publishEventUpdate(request.params.eventId, "pulse-updated", { pulse });
+  response.json({ pulse });
 });
 
-router.get("/:eventId/qr", requireEventId, async (request, response) => {
+router.get("/:eventId/qr", requireEventId, requireCapsuleAccess, async (request, response) => {
   const event = await Event.findById(request.params.eventId).select("inviteCode");
   if (!event) return response.status(404).json({ error: "Couldn’t find that capsule." });
   const configuredOrigin = process.env.PUBLIC_APP_URL?.replace(/\/$/, "");

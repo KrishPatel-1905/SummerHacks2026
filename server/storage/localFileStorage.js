@@ -29,4 +29,11 @@ export class LocalFileStorage {
     const filename = path.basename(url);
     await unlink(path.join(this.directory, filename)).catch(() => {});
   }
+
+  async send(filename, response, next) {
+    response.set("Cache-Control", "public, max-age=31536000, immutable");
+    response.sendFile(path.join(this.directory, path.basename(filename)), (error) => {
+      if (error) next(error);
+    });
+  }
 }

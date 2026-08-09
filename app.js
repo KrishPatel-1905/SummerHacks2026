@@ -12,6 +12,8 @@ const appState = {
   screen: "landing",
   modal: null,
   event: null,
+  ownerToken: null,
+  eventStream: null,
   memories: [],
   pulse: null,
   memoryCount: 0,
@@ -90,6 +92,41 @@ async function api(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || "Something went wrong. Try again.");
   return payload;
+}
+
+function ownerStorageKey(eventId) {
+  return `event-capsule-owner:${eventId}`;
+}
+
+function getStoredOwnerToken(eventId) {
+  try { return localStorage.getItem(ownerStorageKey(eventId)); }
+  catch { return null; }
+}
+
+function storeOwnerToken(eventId, token) {
+  try { localStorage.setItem(ownerStorageKey(eventId), token); }
+  catch { /* Owner controls remain available until this page is closed. */ }
+}
+
+function removeStoredOwnerToken(eventId) {
+  try { localStorage.removeItem(ownerStorageKey(eventId)); }
+  catch { /* Nothing else to clean up. */ }
+}
+
+function ownerApi(path, options = {}) {
+  if (!appState.ownerToken) throw new Error("Owner access is unavailable in this browser.");
+  return api(path, {
+    ...options,
+    headers: { ...(options.headers || {}), "x-owner-token": appState.ownerToken },
+  });
+}
+
+function capsuleApi(event, path, options = {}) {
+  if (!event?.inviteCode) throw new Error("Join a capsule before loading its data.");
+  return api(path, {
+    ...options,
+    headers: { ...(options.headers || {}), "x-capsule-code": event.inviteCode },
+  });
 }
 
 function formatMemoryDate(value) {
@@ -410,13 +447,14 @@ function EventScreen() {
   const currentEvent = appState.event;
   const capacity = currentEvent?.capacity || appState.capsuleDraft.capacity;
   const capsuleFull = appState.memoryCount >= capacity;
+  const acceptsMemories = currentEvent?.status === "open" && !capsuleFull;
   const dateLabel = currentEvent ? formatEventDateRange(currentEvent.startDate, currentEvent.endDate) : "";
   return `<main id="event-screen" class="screen event-screen ${appState.screen === "event" ? "is-active" : ""}" data-screen="event">
     <header class="event-header">
       <div>
         ${HandwrittenHeading(currentEvent?.name || "opening capsule...", { level: 1, className: "event-title" })}
         <p class="memory-count"><span id="memory-count" data-memory-total>${appState.memoryCount}</span> / ${capacity} memories so far!</p>
-        ${currentEvent ? `<div class="event-keepsake-meta"><strong>${esc(dateLabel)}</strong>${currentEvent.description ? `<span>${esc(currentEvent.description)}</span>` : ""}</div>` : ""}
+        ${currentEvent ? `<div class="event-keepsake-meta"><strong>${esc(dateLabel)}</strong>${currentEvent.description ? `<span>${esc(currentEvent.description)}</span>` : ""}${currentEvent.status !== "open" ? `<span class="event-status">${esc(currentEvent.status)}</span>` : ""}</div>` : ""}
       </div>
       ${HandDrawnButton("SHARE ↗", { tone: "paper", className: "share-button", action: 'data-open="invite"' })}
     </header>
@@ -425,7 +463,7 @@ function EventScreen() {
       ${Mascot("star", "Smiling star mascot")}
     </section>
     <section class="event-actions" aria-label="Event actions">
-      ${HandDrawnButton(capsuleFull ? "CAPSULE FULL" : "ADD YOUR MEMORY", { tone: "coral", icon: "+", action: `${capsuleFull ? 'disabled aria-disabled="true"' : 'data-open="add"'} data-add-memory` })}
+      ${HandDrawnButton(capsuleFull ? "CAPSULE FULL" : currentEvent?.status !== "open" ? "CAPSULE CLOSED" : "ADD YOUR MEMORY", { tone: "coral", icon: "+", action: `${acceptsMemories ? 'data-open="add"' : 'disabled aria-disabled="true"'} data-add-memory` })}
       ${HandDrawnButton("PICK A MEMORY", { tone: "yellow", icon: "✦", action: 'data-open="viewer"' })}
       <button class="text-link" data-nav="pulse">EVENT PULSE <span>→</span></button>
     </section>
@@ -605,10 +643,14 @@ function InviteModal() {
   const content = `<div class="modal-content invite-content">
     ${HandwrittenHeading("INVITE EVERYONE", { level: 2, className: "modal-title" })}${Doodle("star", "title-doodle")}
     <div class="invite-grid">
-      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${currentEvent ? `<img class="event-qr" src="/api/events/${esc(currentEvent.id)}/qr" alt="QR code for this event capsule" />` : ""}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
+      <section class="qr-side"><p class="scan-note">scan<br>me! <span>↘</span></p><div class="qr-card">${currentEvent ? `<img class="event-qr" src="/api/events/${esc(currentEvent.id)}/qr?code=${encodeURIComponent(currentEvent.inviteCode)}" alt="QR code for this event capsule" />` : ""}</div>${Mascot("astronaut", "Astronaut pointing to event QR code")}</section>
       <section class="code-side"><h3>INVITE CODE</h3><div class="invite-code">${inviteDisplay(code)}</div><div class="invite-url"><span>♄</span>${esc(inviteUrl().replace(/^https?:\/\//, ""))}</div>
         ${HandDrawnButton("COPY CODE", { tone: "blue", icon: "▣", action: 'data-copy="code"' })}
         ${HandDrawnButton("COPY LINK", { tone: "paper", icon: "↗", action: 'data-copy="link"' })}
+        ${appState.ownerToken ? `<div class="owner-controls"><h3>OWNER CONTROLS</h3>
+          ${HandDrawnButton(currentEvent.status === "open" ? "CLOSE CAPSULE" : "REOPEN CAPSULE", { tone: "paper", action: 'data-owner-action="toggle-status"' })}
+          ${HandDrawnButton("NEW INVITE CODE", { tone: "paper", action: 'data-owner-action="rotate-code"' })}
+        </div>` : ""}
       </section>
     </div>
   </div>`;
@@ -759,7 +801,7 @@ async function createFrontendCapsule() {
   const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 80 : 1050;
   const draft = { ...appState.capsuleDraft, name: appState.capsuleDraft.name.trim(), description: appState.capsuleDraft.description.trim() };
   try {
-    const [{ event }] = await Promise.all([
+    const [{ event, ownerToken }] = await Promise.all([
       api("/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -767,6 +809,8 @@ async function createFrontendCapsule() {
       }),
       new Promise((resolve) => setTimeout(resolve, delay)),
     ]);
+    appState.ownerToken = ownerToken;
+    storeOwnerToken(event.id, ownerToken);
     appState.busy = false;
     await enterEvent(event, { announce: "Your capsule is ready for memories! ✦" });
   } catch (error) {
@@ -781,8 +825,8 @@ async function createFrontendCapsule() {
 
 function openModal(name) {
   const capacity = appState.event?.capacity || appState.capsuleDraft.capacity;
-  if (name === "add" && appState.memoryCount >= capacity) {
-    showToast(`This capsule is full at ${capacity} memories.`);
+  if (name === "add" && (appState.memoryCount >= capacity || appState.event?.status !== "open")) {
+    showToast(appState.event?.status !== "open" ? "This capsule is not accepting memories." : `This capsule is full at ${capacity} memories.`);
     return;
   }
   appState.modal = name;
@@ -925,8 +969,9 @@ function setInlineError(id, message = "") {
 }
 
 async function enterEvent(event, { replaceHistory = false, announce = "" } = {}) {
-  const { memories } = await api(`/api/events/${event.id}/memories`);
+  const { memories } = await capsuleApi(event, `/api/events/${event.id}/memories`);
   appState.event = event;
+  appState.ownerToken = getStoredOwnerToken(event.id);
   appState.memories = memories;
   appState.memoryCount = event.memoryCount ?? memories.length;
   appState.memoryIndex = 0;
@@ -937,7 +982,103 @@ async function enterEvent(event, { replaceHistory = false, announce = "" } = {})
   const method = replaceHistory ? "replaceState" : "pushState";
   window.history[method]({ inviteCode: event.inviteCode }, "", `/${event.inviteCode}`);
   renderApp();
+  connectEventStream();
   if (announce) showToast(announce);
+}
+
+function closeEventStream() {
+  appState.eventStream?.close();
+  appState.eventStream = null;
+}
+
+function refreshLiveEventUi() {
+  updateMemoryTotals();
+  if (!appState.modal && ["event", "pulse"].includes(appState.screen)) renderApp();
+}
+
+function connectEventStream() {
+  closeEventStream();
+  if (!appState.event || typeof EventSource === "undefined") return;
+  const stream = new EventSource(`/api/events/${appState.event.id}/stream?code=${encodeURIComponent(appState.event.inviteCode)}`);
+  appState.eventStream = stream;
+  stream.onmessage = async ({ data }) => {
+    let update;
+    try { update = JSON.parse(data); }
+    catch { return; }
+    if (update.type === "memory-added") {
+      if (!appState.memories.some((memory) => memory.id === update.data.memory.id)) appState.memories.push(update.data.memory);
+      appState.memoryCount = update.data.memoryCount;
+      appState.pulse = null;
+      refreshLiveEventUi();
+    }
+    if (update.type === "memory-removed") {
+      appState.memories = appState.memories.filter((memory) => memory.id !== update.data.memoryId);
+      appState.memoryCount = Math.max(0, appState.memoryCount - 1);
+      appState.pulse = null;
+      refreshLiveEventUi();
+    }
+    if (["event-updated", "code-rotated"].includes(update.type)) {
+      appState.event = update.data.event;
+      appState.memoryCount = update.data.event.memoryCount;
+      if (update.type === "code-rotated") {
+        window.history.replaceState({ inviteCode: appState.event.inviteCode }, "", `/${appState.event.inviteCode}`);
+        try {
+          const { memories } = await capsuleApi(appState.event, `/api/events/${appState.event.id}/memories`);
+          appState.memories = memories;
+        } catch { /* Existing screen remains usable while the stream reconnects. */ }
+        connectEventStream();
+      }
+      refreshLiveEventUi();
+    }
+    if (update.type === "pulse-updated") {
+      appState.pulse = update.data.pulse;
+      appState.memoryCount = update.data.pulse.memoryCount;
+      if (appState.screen === "pulse") renderApp();
+    }
+    if (update.type === "event-deleted") {
+      removeStoredOwnerToken(appState.event.id);
+      closeEventStream();
+      appState.event = null;
+      appState.ownerToken = null;
+      appState.memories = [];
+      appState.memoryCount = 0;
+      appState.screen = "landing";
+      window.history.replaceState({}, "", "/");
+      renderApp();
+      showToast("This capsule was deleted.");
+    }
+  };
+}
+
+async function runOwnerAction(action) {
+  if (!appState.event || !appState.ownerToken || appState.busy) return;
+  appState.busy = true;
+  try {
+    if (action === "toggle-status") {
+      const status = appState.event.status === "open" ? "closed" : "open";
+      const { event } = await ownerApi(`/api/events/${appState.event.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      appState.event = event;
+      renderApp();
+      openModal("invite");
+      showToast(status === "open" ? "Capsule reopened." : "Capsule closed to new memories.");
+    }
+    if (action === "rotate-code") {
+      const { event } = await ownerApi(`/api/events/${appState.event.id}/code`, { method: "POST" });
+      appState.event = event;
+      window.history.replaceState({ inviteCode: event.inviteCode }, "", `/${event.inviteCode}`);
+      renderApp();
+      openModal("invite");
+      showToast(`New invite code: ${inviteDisplay(event.inviteCode)}`);
+    }
+  } catch (error) {
+    showToast(error.message || "Owner action failed.");
+  } finally {
+    appState.busy = false;
+  }
 }
 
 async function joinCapsule(form) {
@@ -980,7 +1121,7 @@ async function showPulse() {
   renderApp();
   showToast("reading the event pulse...");
   try {
-    const { pulse } = await api(`/api/events/${appState.event.id}/pulse`);
+    const { pulse } = await capsuleApi(appState.event, `/api/events/${appState.event.id}/pulse`);
     appState.pulse = pulse;
     appState.memoryCount = pulse.memoryCount;
     renderApp();
@@ -1029,8 +1170,8 @@ async function submitMemory({ skipDrawing = false } = {}) {
     if (appState.photoFile) form.set("image", appState.photoFile, appState.photoFile.name);
     if (drawing) form.set("envelopeDrawing", drawing, "envelope-drawing.png");
 
-    const { memory, memoryCount } = await api(`/api/events/${appState.event.id}/memories`, { method: "POST", body: form });
-    appState.memories.push(memory);
+    const { memory, memoryCount } = await capsuleApi(appState.event, `/api/events/${appState.event.id}/memories`, { method: "POST", body: form });
+    if (!appState.memories.some((existing) => existing.id === memory.id)) appState.memories.push(memory);
     appState.memoryCount = memoryCount;
     appState.pulse = null;
     animateSubmittedMemory(source, memory);
@@ -1176,6 +1317,7 @@ function bindInteractions() {
     const memNav = eventTarget.target.closest("[data-memory-nav]"); if (memNav) refreshMemoryCard(Number(memNav.dataset.memoryNav));
     const ripEnvelope = eventTarget.target.closest("[data-rip-memory]"); if (ripEnvelope) ripMemoryEnvelope();
     const copy = eventTarget.target.closest("[data-copy]"); if (copy) copyValue(copy.dataset.copy);
+    const ownerAction = eventTarget.target.closest("[data-owner-action]"); if (ownerAction) runOwnerAction(ownerAction.dataset.ownerAction);
     const send = eventTarget.target.closest("[data-send]"); if (send) submitMemory({ skipDrawing: send.dataset.skipDrawing === "true" });
     const toolButton = eventTarget.target.closest("[data-tool]");
     if (toolButton) {
@@ -1229,7 +1371,7 @@ window.addEventListener("resize", () => { if (appState.screen === "pulse") drawP
 window.addEventListener("popstate", () => {
   const code = window.location.pathname.slice(1);
   if (/^\d{6}$/.test(code)) loadEventByCode(code);
-  else { appState.screen = "landing"; appState.event = null; appState.memories = []; appState.memoryCount = 0; renderApp(); }
+  else { closeEventStream(); appState.screen = "landing"; appState.event = null; appState.ownerToken = null; appState.memories = []; appState.memoryCount = 0; renderApp(); }
 });
 
 renderApp();
